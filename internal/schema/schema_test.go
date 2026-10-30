@@ -50,6 +50,26 @@ func TestV1KeySetExact(t *testing.T) {
 	}
 }
 
+// TestDefaultsMatchGhostty pins defaults verified live against
+// `ghostty +show-config --default` (Ghostty 1.4.1).
+func TestDefaultsMatchGhostty(t *testing.T) {
+	d := Defaults()
+	for k, want := range map[string]string{
+		"font-size":          "13",
+		"background":         "#282c34",
+		"foreground":         "#ffffff",
+		"background-opacity": "1",
+		"cursor-style":       "block",
+		"cursor-style-blink": "",
+		"theme":              "",
+		"font-family":        "",
+	} {
+		if d[k] != want {
+			t.Errorf("Defaults()[%q] = %q, want %q", k, d[k], want)
+		}
+	}
+}
+
 func TestDefaultsUsable(t *testing.T) {
 	d := Defaults()
 	for _, k := range v1Keys {

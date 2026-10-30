@@ -21,12 +21,12 @@ type Setting struct {
 var all = []Setting{
 	{Key: "theme", Title: "Theme", Type: "string", Default: "", Help: "Color theme name from `ghostty +list-themes` (empty = Ghostty default)."},
 	{Key: "font-family", Title: "Font Family", Type: "string", Default: "", Help: "Font family from `ghostty +list-fonts` (empty = Ghostty default)."},
-	{Key: "font-size", Title: "Font Size", Type: "int", Default: "12", Min: "4", Max: "72", Help: "Font size in points (4-72)."},
-	{Key: "background", Title: "Background", Type: "color", Default: "#000000", Help: "Background color as #RRGGBB or #RRGGBBAA."},
+	{Key: "font-size", Title: "Font Size", Type: "int", Default: "13", Min: "4", Max: "72", Help: "Font size in points (4-72)."},
+	{Key: "background", Title: "Background", Type: "color", Default: "#282c34", Help: "Background color as #RRGGBB or #RRGGBBAA."},
 	{Key: "foreground", Title: "Foreground", Type: "color", Default: "#ffffff", Help: "Foreground (text) color as #RRGGBB or #RRGGBBAA."},
 	{Key: "background-opacity", Title: "Background Opacity", Type: "float", Default: "1", Min: "0", Max: "1", Help: "Background opacity from 0 (transparent) to 1 (opaque)."},
 	{Key: "cursor-style", Title: "Cursor Style", Type: "enum", Default: "block", Options: []string{"block", "bar", "underline"}, Help: "Cursor shape: block, bar, or underline."},
-	{Key: "cursor-style-blink", Title: "Cursor Blink", Type: "bool", Default: "false", Help: "Whether the cursor blinks (true/false)."},
+	{Key: "cursor-style-blink", Title: "Cursor Blink", Type: "bool", Default: "", Help: "Whether the cursor blinks (empty = Ghostty default)."},
 }
 
 // All returns all v1 settings in stable sidebar order.
