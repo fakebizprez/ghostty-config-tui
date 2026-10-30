@@ -309,6 +309,79 @@ func TestEditThemeUnknownWarns(t *testing.T) {
 	}
 }
 
+func TestPickerSelectsTheme(t *testing.T) {
+	opts := testOptions()
+	opts.ThemeOptions = []string{"Dracula", "Nord"}
+	m := New(opts) // cursor 0 = theme
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	for _, ch := range []string{"n", "o", "r"} {
+		updated, _ = m.Update(keyPress(ch))
+		m = updated.(Model)
+	}
+	if !strings.Contains(m.View().Content, "Nord") {
+		t.Fatalf("picker should list matches:\n%s", m.View().Content)
+	}
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if v := m.Values()["theme"]; v != "Nord" {
+		t.Fatalf("theme = %q, want picked Nord", v)
+	}
+	if strings.Contains(m.StatusBar(), "not in") {
+		t.Fatalf("picked option should not warn: %q", m.StatusBar())
+	}
+}
+
+func TestPickerNavigatesOptions(t *testing.T) {
+	opts := testOptions()
+	opts.ThemeOptions = []string{"Dracula", "Nord", "Gruvbox"}
+	m := New(opts)
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("down"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if v := m.Values()["theme"]; v != "Nord" {
+		t.Fatalf("theme = %q, want navigated Nord", v)
+	}
+}
+
+func TestPickerCustomWhenNoMatch(t *testing.T) {
+	opts := testOptions()
+	opts.ThemeOptions = []string{"Dracula"}
+	m := New(opts)
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	for _, ch := range []string{"x", "y", "z"} {
+		updated, _ = m.Update(keyPress(ch))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if v := m.Values()["theme"]; v != "xyz" {
+		t.Fatalf("theme = %q, want custom xyz", v)
+	}
+	if !strings.Contains(m.StatusBar(), "not in") {
+		t.Fatalf("custom value should warn: %q", m.StatusBar())
+	}
+}
+
+func TestPickerEscCancels(t *testing.T) {
+	opts := testOptions()
+	opts.ThemeOptions = []string{"Dracula"}
+	m := New(opts)
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("d"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("esc"))
+	m = updated.(Model)
+	if m.Editing() || m.Values()["theme"] != "" {
+		t.Fatalf("esc should cancel picker, editing=%v values=%v", m.Editing(), m.Values())
+	}
+}
+
 func TestBlinkTickFlipsCursor(t *testing.T) {
 	m := New(testOptions())
 	m.SetValue("cursor-style", "block")

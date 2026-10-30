@@ -51,6 +51,7 @@ type Model struct {
 	editing      bool
 	editKey      string
 	editBuf      string
+	pickIdx      int
 	blinkPhase   bool
 	message      string
 	quitting     bool
@@ -153,7 +154,62 @@ func (m *Model) startEdit() {
 	m.editing = true
 	m.editKey = key
 	m.editBuf = m.effectiveValue(key)
+	m.pickIdx = 0
 	m.message = "editing " + key + " (enter commits, esc cancels)"
+}
+
+// picking reports whether the current edit shows an option picker.
+func (m Model) picking() bool {
+	if !m.editing {
+		return false
+	}
+	switch m.editKey {
+	case "theme":
+		return len(m.themeOptions) > 0
+	case "font-family":
+		return len(m.fontOptions) > 0
+	}
+	return false
+}
+
+func (m Model) pickerOptions() []string {
+	switch m.editKey {
+	case "theme":
+		return m.themeOptions
+	case "font-family":
+		return m.fontOptions
+	}
+	return nil
+}
+
+// matches returns picker options containing the buffer text.
+func (m Model) matches() []string {
+	opts := m.pickerOptions()
+	if m.editBuf == "" {
+		return opts
+	}
+	q := strings.ToLower(m.editBuf)
+	var out []string
+	for _, o := range opts {
+		if strings.Contains(strings.ToLower(o), q) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// pickEnter commits the highlighted match, or the custom buffer on no match.
+func (m *Model) pickEnter() {
+	ms := m.matches()
+	if len(ms) == 0 {
+		m.commitEdit()
+		return
+	}
+	at := m.pickIdx
+	if at < 0 || at >= len(ms) {
+		at = 0
+	}
+	m.finishEdit(ms[at], "")
 }
 
 // cycleEnum moves the edit buffer through the setting's options.
@@ -316,6 +372,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		key := msg.String()
+		if m.editing && m.picking() {
+			switch key {
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			case "esc":
+				m.editing = false
+				m.editBuf = ""
+				m.message = ""
+				return m, nil
+			case "enter":
+				m.pickEnter()
+				return m, nil
+			case "backspace":
+				if len(m.editBuf) > 0 {
+					m.editBuf = m.editBuf[:len(m.editBuf)-1]
+				}
+				m.pickIdx = 0
+				return m, nil
+			case "up":
+				if m.pickIdx > 0 {
+					m.pickIdx--
+				}
+				return m, nil
+			case "down":
+				if m.pickIdx < len(m.matches())-1 {
+					m.pickIdx++
+				}
+				return m, nil
+			case "tab", "right":
+				if ms := m.matches(); len(ms) > 0 {
+					m.pickIdx = (m.pickIdx + 1) % len(ms)
+				}
+				return m, nil
+			case "left":
+				if ms := m.matches(); len(ms) > 0 {
+					m.pickIdx = (m.pickIdx - 1 + len(ms)) % len(ms)
+				}
+				return m, nil
+			default:
+				t := msg.Text
+				if t == "" {
+					if len(key) != 1 {
+						return m, nil
+					}
+					t = key
+				}
+				if len(t) != 1 {
+					return m, nil
+				}
+				m.editBuf += t
+				m.pickIdx = 0
+				return m, nil
+			}
+		}
 		if m.editing {
 			switch key {
 			case "ctrl+c":
@@ -509,6 +620,23 @@ func (m Model) View() tea.View {
 		}
 		if m.editing && s.Key == m.editKey {
 			fmt.Fprintf(&sb, "%s%s %s = %s\n", cursor, dot, s.Key, m.editBuf+"▌")
+			if m.picking() {
+				ms := m.matches()
+				shown := ms
+				if len(shown) > 8 {
+					shown = shown[:8]
+				}
+				for i, o := range shown {
+					mark := "  "
+					if i == m.pickIdx {
+						mark = "> "
+					}
+					fmt.Fprintf(&sb, "    %s%s\n", mark, o)
+				}
+				if len(ms) == 0 {
+					fmt.Fprintf(&sb, "    (no match — enter uses custom value)\n")
+				}
+			}
 			continue
 		}
 		fmt.Fprintf(&sb, "%s%s %s = %s\n", cursor, dot, s.Key, val)
