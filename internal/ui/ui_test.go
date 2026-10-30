@@ -26,9 +26,27 @@ func keyPress(s string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
 		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "left":
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "right":
+		return tea.KeyPressMsg{Code: tea.KeyRight}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "backspace":
+		return tea.KeyPressMsg{Code: tea.KeyBackspace}
+	case "space":
+		return tea.KeyPressMsg{Text: " ", Code: ' '}
 	default:
 		return tea.KeyPressMsg{Text: s, Code: []rune(s)[0]}
 	}
+}
+
+func moveTo(m Model, idx int) Model {
+	for m.Cursor() != idx {
+		updated, _ := m.Update(keyPress("j"))
+		m = updated.(Model)
+	}
+	return m
 }
 
 func TestNavigateDownUp(t *testing.T) {
@@ -169,6 +187,125 @@ func TestPreviewShowsPalette(t *testing.T) {
 	m := New(testOptions())
 	if !strings.Contains(previewBlock(m), "palette") {
 		t.Fatalf("palette row missing:\n%s", previewBlock(m))
+	}
+}
+
+func TestFilterBackspaceWidens(t *testing.T) {
+	m := typeFilter(t, New(testOptions()), "fontx")
+	if len(m.Visible()) != 0 {
+		t.Fatalf("fontx should match nothing, got %v", visibleKeys(m))
+	}
+	updated, _ := m.Update(keyPress("backspace"))
+	m = updated.(Model)
+	if got := visibleKeys(m); len(got) != 2 {
+		t.Fatalf("after backspace visible = %v, want 2 font keys", got)
+	}
+}
+
+func TestEditEnumCycleAndCommit(t *testing.T) {
+	m := moveTo(New(testOptions()), 6) // cursor-style
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("tab"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if v := m.Values()["cursor-style"]; v != "bar" {
+		t.Fatalf("cursor-style = %q, want bar", v)
+	}
+	if !m.Dirty() {
+		t.Fatal("committed edit should mark model dirty")
+	}
+}
+
+func TestEditBoolToggleCommit(t *testing.T) {
+	m := moveTo(New(testOptions()), 7) // cursor-style-blink
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("space"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if v := m.Values()["cursor-style-blink"]; v != "true" {
+		t.Fatalf("cursor-style-blink = %q, want true", v)
+	}
+}
+
+func TestEditIntClampCommit(t *testing.T) {
+	m := moveTo(New(testOptions()), 2) // font-size, current "12"
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	for _, ch := range []string{"backspace", "backspace"} {
+		updated, _ = m.Update(keyPress(ch))
+		m = updated.(Model)
+	}
+	for _, ch := range []string{"2", "0", "0"} {
+		updated, _ = m.Update(keyPress(ch))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if v := m.Values()["font-size"]; v != "72" {
+		t.Fatalf("font-size = %q, want clamped 72", v)
+	}
+}
+
+func TestEditInvalidStaysEditing(t *testing.T) {
+	m := moveTo(New(testOptions()), 2) // font-size
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	for _, ch := range []string{"backspace", "backspace", "a", "b", "c"} {
+		updated, _ = m.Update(keyPress(ch))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if !m.Editing() {
+		t.Fatal("invalid value should keep edit mode open")
+	}
+	updated, _ = m.Update(keyPress("esc"))
+	m = updated.(Model)
+	if m.Editing() || m.Values()["font-size"] != "12" {
+		t.Fatalf("esc should cancel edit, editing=%v values=%v", m.Editing(), m.Values())
+	}
+}
+
+func TestEditColorRejectsBad(t *testing.T) {
+	m := moveTo(New(testOptions()), 3) // background
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	for range 7 {
+		updated, _ = m.Update(keyPress("backspace"))
+		m = updated.(Model)
+	}
+	for _, ch := range []string{"#", "z", "z", "z", "z", "z", "z"} {
+		updated, _ = m.Update(keyPress(ch))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if !m.Editing() {
+		t.Fatal("bad color should keep edit mode open")
+	}
+}
+
+func TestEditThemeUnknownWarns(t *testing.T) {
+	opts := testOptions()
+	opts.ThemeOptions = []string{"Dracula"}
+	m := New(opts) // cursor 0 = theme
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	for _, ch := range []string{"C", "u", "s", "t", "o", "m"} {
+		updated, _ = m.Update(keyPress(ch))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if v := m.Values()["theme"]; v != "Custom" {
+		t.Fatalf("theme = %q, want Custom", v)
+	}
+	if !strings.Contains(m.StatusBar(), "not in") {
+		t.Fatalf("unknown theme should warn, status = %q", m.StatusBar())
 	}
 }
 

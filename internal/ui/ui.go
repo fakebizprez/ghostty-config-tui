@@ -4,6 +4,7 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,9 @@ type Model struct {
 	dryRun       bool
 	filter       string
 	filtering    bool
+	editing      bool
+	editKey      string
+	editBuf      string
 	blinkPhase   bool
 	message      string
 	quitting     bool
@@ -110,6 +114,158 @@ func (m *Model) clampCursor() {
 // Cursor returns the sidebar cursor.
 func (m Model) Cursor() int { return m.cursor }
 
+// Values returns a copy of the current managed values.
+func (m Model) Values() map[string]string {
+	out := map[string]string{}
+	for k, v := range m.values {
+		out[k] = v
+	}
+	return out
+}
+
+// Editing reports whether a detail edit is in progress.
+func (m Model) Editing() bool { return m.editing }
+
+// editSetting returns the schema entry for the row being edited.
+func (m Model) editSetting() schema.Setting {
+	s, _ := schema.ByKey(m.editKey)
+	return s
+}
+
+// effectiveValue returns the current value or the schema default for display.
+func (m Model) effectiveValue(key string) string {
+	if v := m.values[key]; v != "" {
+		return v
+	}
+	if s, ok := schema.ByKey(key); ok {
+		return s.Default
+	}
+	return ""
+}
+
+// startEdit opens edit mode for the row under the cursor.
+func (m *Model) startEdit() {
+	vis := m.visible()
+	if len(vis) == 0 {
+		return
+	}
+	key := vis[m.cursor].Key
+	m.editing = true
+	m.editKey = key
+	m.editBuf = m.effectiveValue(key)
+	m.message = "editing " + key + " (enter commits, esc cancels)"
+}
+
+// cycleEnum moves the edit buffer through the setting's options.
+func (m *Model) cycleEnum(forward bool) {
+	s := m.editSetting()
+	if len(s.Options) == 0 {
+		return
+	}
+	at := 0
+	for i, o := range s.Options {
+		if strings.EqualFold(o, m.editBuf) {
+			at = i
+			break
+		}
+	}
+	if forward {
+		at = (at + 1) % len(s.Options)
+	} else {
+		at = (at - 1 + len(s.Options)) % len(s.Options)
+	}
+	m.editBuf = s.Options[at]
+}
+
+// toggleBool flips a true/false edit buffer.
+func (m *Model) toggleBool() {
+	on, _ := schema.ParseBool(m.editBuf)
+	if on {
+		m.editBuf = "false"
+	} else {
+		m.editBuf = "true"
+	}
+}
+
+// commitEdit validates the buffer and stores it, or keeps edit mode open.
+func (m *Model) commitEdit() {
+	s := m.editSetting()
+	v := strings.TrimSpace(m.editBuf)
+	switch s.Type {
+	case "int":
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			m.message = "invalid " + s.Key + ": want a number (esc cancels)"
+			return
+		}
+		m.finishEdit(strconv.Itoa(schema.ClampFontSize(n)), "")
+	case "float":
+		f, ok := schema.ParseFloat(v)
+		if !ok {
+			m.message = "invalid " + s.Key + ": want a number (esc cancels)"
+			return
+		}
+		m.finishEdit(strconv.FormatFloat(schema.ClampOpacity(f), 'f', -1, 64), "")
+	case "color":
+		c := schema.NormalizeColor(v)
+		if !schema.ValidateColor(c) {
+			m.message = "invalid " + s.Key + ": want #RRGGBB (esc cancels)"
+			return
+		}
+		m.finishEdit(c, "")
+	case "enum":
+		matched := ""
+		for _, o := range s.Options {
+			if strings.EqualFold(o, v) {
+				matched = o
+			}
+		}
+		if matched == "" {
+			m.message = "invalid " + s.Key + ": want one of " + strings.Join(s.Options, "/") + " (esc cancels)"
+			return
+		}
+		m.finishEdit(matched, "")
+	case "bool":
+		on, ok := schema.ParseBool(v)
+		if !ok {
+			m.message = "invalid " + s.Key + ": want true/false (esc cancels)"
+			return
+		}
+		if on {
+			m.finishEdit("true", "")
+		} else {
+			m.finishEdit("false", "")
+		}
+	default:
+		m.finishEdit(v, s.Key)
+	}
+}
+
+// finishEdit stores a validated value, warning on unknown theme/font names.
+func (m *Model) finishEdit(stored, warnedKey string) {
+	var options []string
+	switch warnedKey {
+	case "theme":
+		options = m.themeOptions
+	case "font-family":
+		options = m.fontOptions
+	}
+	m.SetValue(m.editKey, stored)
+	m.editing = false
+	m.message = m.editKey + " = " + stored
+	if len(options) > 0 && warnedKey != "" {
+		known := false
+		for _, o := range options {
+			if o == stored {
+				known = true
+			}
+		}
+		if !known {
+			m.message += " (warning: not in list — used as-is)"
+		}
+	}
+}
+
 // Dirty reports unsaved changes.
 func (m Model) Dirty() bool {
 	if len(m.values) != len(m.orig) {
@@ -160,6 +316,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		key := msg.String()
+		if m.editing {
+			switch key {
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			case "esc":
+				m.editing = false
+				m.editBuf = ""
+				m.message = ""
+				return m, nil
+			case "enter":
+				m.commitEdit()
+				return m, nil
+			case "backspace":
+				if len(m.editBuf) > 0 {
+					m.editBuf = m.editBuf[:len(m.editBuf)-1]
+				}
+				return m, nil
+			case "tab", "right":
+				if typ := m.editSetting().Type; typ == "enum" {
+					m.cycleEnum(true)
+				} else if typ == "bool" {
+					m.toggleBool()
+				}
+				return m, nil
+			case "left":
+				if typ := m.editSetting().Type; typ == "enum" {
+					m.cycleEnum(false)
+				} else if typ == "bool" {
+					m.toggleBool()
+				}
+				return m, nil
+			case "up", "down", " ", "space":
+				if m.editSetting().Type == "bool" {
+					m.toggleBool()
+				}
+				return m, nil
+			default:
+				t := msg.Text
+				if t == "" {
+					if len(key) != 1 {
+						return m, nil
+					}
+					t = key
+				}
+				if len(t) != 1 {
+					return m, nil
+				}
+				m.editBuf += t
+				return m, nil
+			}
+		}
 		if m.filtering {
 			switch key {
 			case "esc":
@@ -260,10 +468,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = "reset all"
 			return m, nil
 		case "enter":
-			if vis := m.visible(); len(vis) > 0 {
-				k := vis[m.cursor].Key
-				m.message = k + " = " + m.values[k]
-			}
+			m.startEdit()
 			return m, nil
 		case "esc":
 			m.message = ""
@@ -301,6 +506,10 @@ func (m Model) View() tea.View {
 		val := m.values[s.Key]
 		if val == "" {
 			val = s.Default
+		}
+		if m.editing && s.Key == m.editKey {
+			fmt.Fprintf(&sb, "%s%s %s = %s\n", cursor, dot, s.Key, m.editBuf+"▌")
+			continue
 		}
 		fmt.Fprintf(&sb, "%s%s %s = %s\n", cursor, dot, s.Key, val)
 	}
