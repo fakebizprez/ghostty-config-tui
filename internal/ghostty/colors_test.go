@@ -40,6 +40,9 @@ func TestThemeColorsWithDefaults(t *testing.T) {
 	if c.Foreground == "" || c.Palette[0] == "" || c.Palette[15] == "" {
 		t.Fatalf("defaults not filled: %+v", c)
 	}
+	if c.Cursor != c.Foreground {
+		t.Fatalf("cursor should fall back to foreground, got %q", c.Cursor)
+	}
 }
 
 func TestParseThemePaths(t *testing.T) {

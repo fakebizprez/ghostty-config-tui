@@ -423,12 +423,37 @@ func TestPreviewUsesThemeColors(t *testing.T) {
 	m := New(opts)
 	updated, _ := m.Update(themeResolvedMsg())
 	m = updated.(Model)
-	bg, fg, pal := resolvePreviewColors(m)
+	bg, fg, _, pal := resolvePreviewColors(m)
 	if bg != "#282a36" || fg != "#f8f8f2" {
 		t.Fatalf("preview colors = %q %q, want theme colors", bg, fg)
 	}
 	if pal[1] != "#ff5555" {
 		t.Fatalf("preview palette[1] = %q, want theme color", pal[1])
+	}
+}
+
+func TestResetFieldAndAll(t *testing.T) {
+	m := moveTo(New(testOptions()), 2) // font-size, orig "12"
+	m.SetValue("font-size", "14")
+	m.SetValue("theme", "Dracula")
+	updated, _ := m.Update(keyPress("r"))
+	m = updated.(Model)
+	if v := m.Values()["font-size"]; v != "12" {
+		t.Fatalf("r should reset field, font-size = %q", v)
+	}
+	if v := m.Values()["theme"]; v != "Dracula" {
+		t.Fatalf("r should leave other edits, theme = %q", v)
+	}
+	updated, _ = m.Update(keyPress("R"))
+	m = updated.(Model)
+	if m.Dirty() {
+		t.Fatalf("R should reset all, values = %v", m.Values())
+	}
+}
+
+func TestViewUsesAltScreen(t *testing.T) {
+	if !New(testOptions()).View().AltScreen {
+		t.Fatal("view should use the alternate screen buffer")
 	}
 }
 
@@ -438,9 +463,23 @@ func TestPreviewExplicitBeatsTheme(t *testing.T) {
 	m := New(opts)
 	updated, _ := m.Update(themeResolvedMsg())
 	m = updated.(Model)
-	bg, _, _ := resolvePreviewColors(m)
+	bg, _, _, _ := resolvePreviewColors(m)
 	if bg != "#000000" {
 		t.Fatalf("explicit background should win, got %q", bg)
+	}
+}
+
+func TestPreviewCursorColor(t *testing.T) {
+	opts := testOptions()
+	opts.Values = map[string]string{"theme": "Dracula"}
+	m := New(opts)
+	msg := themeResolvedMsg()
+	msg.Colors.Cursor = "#ff0000"
+	updated, _ := m.Update(msg)
+	m = updated.(Model)
+	_, _, cursor, _ := resolvePreviewColors(m)
+	if cursor != "#ff0000" {
+		t.Fatalf("cursor color = %q, want theme cursor", cursor)
 	}
 }
 

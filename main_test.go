@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ghostty-config-tui/internal/ui"
 )
 
 func TestParseFlagsDefaults(t *testing.T) {
@@ -104,5 +106,46 @@ func TestRunUnknownFlagExit2(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	if code := run(&out, &errBuf, []string{"--bogus"}, true); code != 2 {
 		t.Fatalf("unknown exit = %d, stderr=%q", code, errBuf.String())
+	}
+}
+
+func TestRunSaveUndoRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	cfgDir := filepath.Join(dir, "ghostty")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(cfgDir, "config.ghostty")
+	orig := "# keep me\nfont-size = 12\nunmanaged = keep\n"
+	if err := os.WriteFile(cfg, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldStart := startProgram
+	defer func() { startProgram = oldStart }()
+	var got ui.Options
+	startProgram = func(o ui.Options) error { got = o; return nil }
+	var out, errBuf bytes.Buffer
+	if code := run(&out, &errBuf, []string{}, true); code != 0 {
+		t.Fatalf("run exit = %d, stderr=%q", code, errBuf.String())
+	}
+	if err := got.OnSave(map[string]string{"font-size": "14"}); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := os.ReadFile(cfg)
+	if !strings.Contains(string(saved), "font-size = 14") || !strings.Contains(string(saved), "unmanaged = keep") {
+		t.Fatalf("save should rewrite only managed keys, got:\n%s", saved)
+	}
+	restored, err := got.OnUndo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored["font-size"] != "12" {
+		t.Fatalf("undo values = %v, want font-size 12", restored)
+	}
+	after, _ := os.ReadFile(cfg)
+	if string(after) != orig {
+		t.Fatalf("undo should restore exact bytes, got:\n%s", after)
 	}
 }

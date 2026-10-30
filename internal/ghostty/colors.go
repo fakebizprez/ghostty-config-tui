@@ -34,6 +34,9 @@ func (c ThemeColors) WithDefaults() ThemeColors {
 	if !schema.ValidateColor(c.Foreground) {
 		c.Foreground = schema.Defaults()["foreground"]
 	}
+	if !schema.ValidateColor(c.Cursor) {
+		c.Cursor = c.Foreground
+	}
 	for i := range c.Palette {
 		if !schema.ValidateColor(c.Palette[i]) {
 			c.Palette[i] = DefaultPalette[i]

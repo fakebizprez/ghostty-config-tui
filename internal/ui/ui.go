@@ -705,16 +705,20 @@ func blinkEnabled(m Model) bool {
 
 // resolvePreviewColors applies explicit values over loaded theme colors
 // over Ghostty defaults for the live preview.
-func resolvePreviewColors(m Model) (bg, fg string, pal [16]string) {
+func resolvePreviewColors(m Model) (bg, fg, cursor string, pal [16]string) {
 	bg = m.values["background"]
 	fg = m.values["foreground"]
 	pal = ghostty.DefaultPalette
+	cursor = ""
 	if theme := m.values["theme"]; theme != "" && m.themeColorsOK && m.themeColorsFor == theme {
 		if bg == "" {
 			bg = m.themeColors.Background
 		}
 		if fg == "" {
 			fg = m.themeColors.Foreground
+		}
+		if schema.ValidateColor(m.themeColors.Cursor) {
+			cursor = m.themeColors.Cursor
 		}
 		pal = m.themeColors.Palette
 	}
@@ -724,11 +728,14 @@ func resolvePreviewColors(m Model) (bg, fg string, pal [16]string) {
 	if !schema.ValidateColor(fg) {
 		fg = schema.Defaults()["foreground"]
 	}
-	return bg, fg, pal
+	if !schema.ValidateColor(cursor) {
+		cursor = fg
+	}
+	return bg, fg, cursor, pal
 }
 
 func previewBlock(m Model) string {
-	bg, fg, palette := resolvePreviewColors(m)
+	bg, fg, cursorColor, palette := resolvePreviewColors(m)
 	box := lipgloss.NewStyle().
 		Background(lipgloss.Color(bg)).
 		Foreground(lipgloss.Color(fg)).
@@ -745,7 +752,8 @@ func previewBlock(m Model) string {
 			glyph = " "
 		}
 	}
-	return "preview: " + box + "\n" + "palette: " + pal.String() + "\n" + "cursor: " + glyph + " (blink " + blink + ")"
+	cursorOut := lipgloss.NewStyle().Foreground(lipgloss.Color(cursorColor)).Render(glyph)
+	return "preview: " + box + "\n" + "palette: " + pal.String() + "\n" + "cursor: " + cursorOut + " (blink " + blink + ")"
 }
 
 func firstNonEmpty(vals ...string) string {
