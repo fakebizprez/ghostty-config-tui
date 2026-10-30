@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"ghostty-config-tui/internal/ghostty"
 )
 
 func testOptions() Options {
@@ -398,5 +400,66 @@ func TestBlinkTickFlipsCursor(t *testing.T) {
 	m = updated.(Model)
 	if !strings.Contains(previewBlock(m), "█") {
 		t.Fatalf("cursor should return on next phase:\n%s", previewBlock(m))
+	}
+}
+
+func themeResolvedMsg() ThemeResolvedMsg {
+	var pal [16]string
+	pal[1] = "#ff5555"
+	return ThemeResolvedMsg{
+		Name: "Dracula",
+		Colors: ghostty.ThemeColors{
+			Background: "#282a36",
+			Foreground: "#f8f8f2",
+			Palette:    pal,
+		},
+		OK: true,
+	}
+}
+
+func TestPreviewUsesThemeColors(t *testing.T) {
+	opts := testOptions()
+	opts.Values = map[string]string{"theme": "Dracula"}
+	m := New(opts)
+	updated, _ := m.Update(themeResolvedMsg())
+	m = updated.(Model)
+	bg, fg, pal := resolvePreviewColors(m)
+	if bg != "#282a36" || fg != "#f8f8f2" {
+		t.Fatalf("preview colors = %q %q, want theme colors", bg, fg)
+	}
+	if pal[1] != "#ff5555" {
+		t.Fatalf("preview palette[1] = %q, want theme color", pal[1])
+	}
+}
+
+func TestPreviewExplicitBeatsTheme(t *testing.T) {
+	opts := testOptions()
+	opts.Values = map[string]string{"theme": "Dracula", "background": "#000000"}
+	m := New(opts)
+	updated, _ := m.Update(themeResolvedMsg())
+	m = updated.(Model)
+	bg, _, _ := resolvePreviewColors(m)
+	if bg != "#000000" {
+		t.Fatalf("explicit background should win, got %q", bg)
+	}
+}
+
+func TestThemeCommitDispatchesResolve(t *testing.T) {
+	m := New(testOptions())
+	updated, cmd := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	updated, cmd = m.Update(keyPress("enter"))
+	m = updated.(Model)
+	_ = updated
+	if cmd == nil {
+		t.Fatal("theme commit without options should still dispatch a resolve")
+	}
+	m2 := moveTo(New(testOptions()), 2)
+	updated, cmd = m2.Update(keyPress("enter"))
+	m2 = updated.(Model)
+	updated, cmd = m2.Update(keyPress("enter"))
+	_ = updated
+	if cmd != nil {
+		t.Fatal("non-theme commit should not dispatch a resolve")
 	}
 }

@@ -11,8 +11,23 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
+	"ghostty-config-tui/internal/ghostty"
 	"ghostty-config-tui/internal/schema"
 )
+
+// ThemeResolvedMsg delivers asynchronously loaded theme colors.
+type ThemeResolvedMsg struct {
+	Name   string
+	Colors ghostty.ThemeColors
+	OK     bool
+}
+
+func resolveThemeCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		c, ok := ghostty.ResolveThemeColors(name)
+		return ThemeResolvedMsg{Name: name, Colors: c, OK: ok}
+	}
+}
 
 // BlinkMsg flips the cursor blink phase on every tick.
 type BlinkMsg struct{}
@@ -36,27 +51,30 @@ type Options struct {
 
 // Model is the Tea Elm model.
 type Model struct {
-	keys         []schema.Setting
-	cursor       int
-	values       map[string]string
-	orig         map[string]string
-	configPath   string
-	themeOptions []string
-	fontOptions  []string
-	onSave       func(map[string]string) error
-	onUndo       func() (map[string]string, error)
-	dryRun       bool
-	filter       string
-	filtering    bool
-	editing      bool
-	editKey      string
-	editBuf      string
-	pickIdx      int
-	blinkPhase   bool
-	message      string
-	quitting     bool
-	width        int
-	height       int
+	keys           []schema.Setting
+	cursor         int
+	values         map[string]string
+	orig           map[string]string
+	configPath     string
+	themeOptions   []string
+	fontOptions    []string
+	onSave         func(map[string]string) error
+	onUndo         func() (map[string]string, error)
+	dryRun         bool
+	filter         string
+	filtering      bool
+	editing        bool
+	editKey        string
+	editBuf        string
+	pickIdx        int
+	themeColors    ghostty.ThemeColors
+	themeColorsOK  bool
+	themeColorsFor string
+	blinkPhase     bool
+	message        string
+	quitting       bool
+	width          int
+	height         int
 }
 
 // New builds a Model from Options. Every setting comes from internal/schema.
@@ -88,7 +106,12 @@ func New(opts Options) Model {
 }
 
 // Init implements tea.Model.
-func (m Model) Init() tea.Cmd { return tickCmd() }
+func (m Model) Init() tea.Cmd {
+	if m.values["theme"] != "" {
+		return tea.Batch(tickCmd(), resolveThemeCmd(m.values["theme"]))
+	}
+	return tickCmd()
+}
 
 // visible returns the sidebar settings matching the current filter.
 func (m Model) visible() []schema.Setting {
@@ -199,17 +222,25 @@ func (m Model) matches() []string {
 }
 
 // pickEnter commits the highlighted match, or the custom buffer on no match.
-func (m *Model) pickEnter() {
+func (m *Model) pickEnter() tea.Cmd {
 	ms := m.matches()
 	if len(ms) == 0 {
-		m.commitEdit()
-		return
+		return m.commitEdit()
 	}
 	at := m.pickIdx
 	if at < 0 || at >= len(ms) {
 		at = 0
 	}
 	m.finishEdit(ms[at], "")
+	return m.themeCmd()
+}
+
+// themeCmd dispatches an async theme color reload after a theme commit.
+func (m *Model) themeCmd() tea.Cmd {
+	if m.editKey == "theme" && !m.editing {
+		return resolveThemeCmd(m.values["theme"])
+	}
+	return nil
 }
 
 // cycleEnum moves the edit buffer through the setting's options.
@@ -244,7 +275,8 @@ func (m *Model) toggleBool() {
 }
 
 // commitEdit validates the buffer and stores it, or keeps edit mode open.
-func (m *Model) commitEdit() {
+// A successful theme commit returns a command reloading theme colors.
+func (m *Model) commitEdit() tea.Cmd {
 	s := m.editSetting()
 	v := strings.TrimSpace(m.editBuf)
 	switch s.Type {
@@ -252,21 +284,21 @@ func (m *Model) commitEdit() {
 		n, err := strconv.Atoi(v)
 		if err != nil {
 			m.message = "invalid " + s.Key + ": want a number (esc cancels)"
-			return
+			return nil
 		}
 		m.finishEdit(strconv.Itoa(schema.ClampFontSize(n)), "")
 	case "float":
 		f, ok := schema.ParseFloat(v)
 		if !ok {
 			m.message = "invalid " + s.Key + ": want a number (esc cancels)"
-			return
+			return nil
 		}
 		m.finishEdit(strconv.FormatFloat(schema.ClampOpacity(f), 'f', -1, 64), "")
 	case "color":
 		c := schema.NormalizeColor(v)
 		if !schema.ValidateColor(c) {
 			m.message = "invalid " + s.Key + ": want #RRGGBB (esc cancels)"
-			return
+			return nil
 		}
 		m.finishEdit(c, "")
 	case "enum":
@@ -278,14 +310,14 @@ func (m *Model) commitEdit() {
 		}
 		if matched == "" {
 			m.message = "invalid " + s.Key + ": want one of " + strings.Join(s.Options, "/") + " (esc cancels)"
-			return
+			return nil
 		}
 		m.finishEdit(matched, "")
 	case "bool":
 		on, ok := schema.ParseBool(v)
 		if !ok {
 			m.message = "invalid " + s.Key + ": want true/false (esc cancels)"
-			return
+			return nil
 		}
 		if on {
 			m.finishEdit("true", "")
@@ -295,6 +327,7 @@ func (m *Model) commitEdit() {
 	default:
 		m.finishEdit(v, s.Key)
 	}
+	return m.themeCmd()
 }
 
 // finishEdit stores a validated value, warning on unknown theme/font names.
@@ -366,6 +399,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case BlinkMsg:
 		m.blinkPhase = !m.blinkPhase
 		return m, tickCmd()
+	case ThemeResolvedMsg:
+		m.themeColors = msg.Colors
+		m.themeColorsOK = msg.OK
+		m.themeColorsFor = msg.Name
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -383,8 +421,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.message = ""
 				return m, nil
 			case "enter":
-				m.pickEnter()
-				return m, nil
+				return m, m.pickEnter()
 			case "backspace":
 				if len(m.editBuf) > 0 {
 					m.editBuf = m.editBuf[:len(m.editBuf)-1]
@@ -438,8 +475,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.message = ""
 				return m, nil
 			case "enter":
-				m.commitEdit()
-				return m, nil
+				return m, m.commitEdit()
 			case "backspace":
 				if len(m.editBuf) > 0 {
 					m.editBuf = m.editBuf[:len(m.editBuf)-1]
@@ -650,14 +686,6 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// defaultPalette is the fallback 16-color swatch row for the preview.
-var defaultPalette = []string{
-	"#000000", "#800000", "#008000", "#808000",
-	"#000080", "#800080", "#008080", "#c0c0c0",
-	"#808080", "#ff0000", "#00ff00", "#ffff00",
-	"#0000ff", "#ff00ff", "#00ffff", "#ffffff",
-}
-
 func cursorGlyph(style string) string {
 	switch style {
 	case "bar":
@@ -675,21 +703,38 @@ func blinkEnabled(m Model) bool {
 	return on
 }
 
-func previewBlock(m Model) string {
-	bg := firstNonEmpty(m.values["background"], schema.Defaults()["background"])
+// resolvePreviewColors applies explicit values over loaded theme colors
+// over Ghostty defaults for the live preview.
+func resolvePreviewColors(m Model) (bg, fg string, pal [16]string) {
+	bg = m.values["background"]
+	fg = m.values["foreground"]
+	pal = ghostty.DefaultPalette
+	if theme := m.values["theme"]; theme != "" && m.themeColorsOK && m.themeColorsFor == theme {
+		if bg == "" {
+			bg = m.themeColors.Background
+		}
+		if fg == "" {
+			fg = m.themeColors.Foreground
+		}
+		pal = m.themeColors.Palette
+	}
 	if !schema.ValidateColor(bg) {
 		bg = schema.Defaults()["background"]
 	}
-	fg := firstNonEmpty(m.values["foreground"], schema.Defaults()["foreground"])
 	if !schema.ValidateColor(fg) {
 		fg = schema.Defaults()["foreground"]
 	}
+	return bg, fg, pal
+}
+
+func previewBlock(m Model) string {
+	bg, fg, palette := resolvePreviewColors(m)
 	box := lipgloss.NewStyle().
 		Background(lipgloss.Color(bg)).
 		Foreground(lipgloss.Color(fg)).
 		Render("  AaBbCc 0123  ")
 	var pal strings.Builder
-	for _, c := range defaultPalette {
+	for _, c := range palette {
 		pal.WriteString(lipgloss.NewStyle().Background(lipgloss.Color(c)).Render("  "))
 	}
 	glyph := cursorGlyph(firstNonEmpty(m.values["cursor-style"], "block"))
