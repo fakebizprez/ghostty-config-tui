@@ -21,6 +21,57 @@ func TestParseFonts(t *testing.T) {
 	}
 }
 
+func TestParseVersion(t *testing.T) {
+	real := "Ghostty 1.4.1-main+9781c0afc\n\nVersion\n  - version: 1.4.1-main+9781c0afc\n  - channel: tip\n"
+	for _, tc := range []struct {
+		in            string
+		maj, min, pat int
+		ok            bool
+	}{
+		{real, 1, 4, 1, true},
+		{"Ghostty 1.2.3", 1, 2, 3, true},
+		{"Ghostty 1.1.9", 1, 1, 9, true},
+		{"v0.9.0", 0, 9, 0, true},
+		{"1.2", 1, 2, 0, true},
+		{"", 0, 0, 0, false},
+		{"no version here", 0, 0, 0, false},
+		{"Ghostty tip", 0, 0, 0, false},
+	} {
+		maj, min, pat, ok := ParseVersion(tc.in)
+		if maj != tc.maj || min != tc.min || pat != tc.pat || ok != tc.ok {
+			t.Errorf("ParseVersion(%q) = %d.%d.%d,%v, want %d.%d.%d,%v",
+				tc.in, maj, min, pat, ok, tc.maj, tc.min, tc.pat, tc.ok)
+		}
+	}
+}
+
+func TestAtLeast123(t *testing.T) {
+	for _, tc := range []struct {
+		maj, min, pat int
+		want          bool
+	}{
+		{1, 4, 1, true},
+		{1, 2, 3, true},
+		{1, 2, 2, false},
+		{1, 1, 9, false},
+		{0, 9, 0, false},
+		{2, 0, 0, true},
+	} {
+		if got := AtLeast123(tc.maj, tc.min, tc.pat); got != tc.want {
+			t.Errorf("AtLeast123(%d,%d,%d) = %v, want %v", tc.maj, tc.min, tc.pat, got, tc.want)
+		}
+	}
+}
+
+func TestVersionMissingBinary(t *testing.T) {
+	oldLook := lookPath
+	defer func() { lookPath = oldLook }()
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	if _, _, _, ok := Version(); ok {
+		t.Fatal("missing binary should report unknown version")
+	}
+}
+
 func TestMissingBinaryDegraded(t *testing.T) {
 	oldLook := lookPath
 	oldRun := runCommand

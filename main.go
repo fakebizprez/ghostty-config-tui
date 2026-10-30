@@ -78,6 +78,13 @@ var startProgram = func(opts ui.Options) error {
 	return ui.Run(opts)
 }
 
+// resolvePath detects the Ghostty version so new files prefer config.ghostty
+// on Ghostty >= 1.2.3 and plain config on older releases.
+func resolvePath() string {
+	maj, min, pat, ok := ghostty.Version()
+	return config.ResolveConfigPathForVersion(ok, maj, min, pat)
+}
+
 func run(stdout, stderr io.Writer, args []string, isTTY bool) int {
 	f, _, err := parseFlags(args)
 	if err != nil {
@@ -94,7 +101,7 @@ func run(stdout, stderr io.Writer, args []string, isTTY bool) int {
 		return 0
 	}
 	if f.print {
-		path := config.ResolveConfigPath()
+		path := resolvePath()
 		if err := printConfig(stdout, path); err != nil {
 			fmt.Fprintln(stderr, "print: "+err.Error())
 			return 1
@@ -102,7 +109,7 @@ func run(stdout, stderr io.Writer, args []string, isTTY bool) int {
 		return 0
 	}
 
-	path := config.ResolveConfigPath()
+	path := resolvePath()
 
 	// Dry-run without a TTY degrades to printing what would be edited.
 	if f.dryRun && !isTTY {

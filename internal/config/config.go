@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"ghostty-config-tui/internal/ghostty"
 )
 
 // Line is one source line: kv pairs are editable, everything else is raw.
@@ -139,7 +141,19 @@ func (f *File) Values(keys []string) map[string]string {
 
 // ResolveConfigPath resolves per AGENTS.md order.
 func ResolveConfigPath() string {
-	return resolveWithEnv(runtime.GOOS, os.Getenv("XDG_CONFIG_HOME"), homeDir(), fileExists)
+	return resolveWithEnv(runtime.GOOS, os.Getenv("XDG_CONFIG_HOME"), homeDir(), fileExists, true)
+}
+
+// ResolveConfigPathForVersion resolves per AGENTS.md order, preferring plain
+// config for new files on Ghostty older than 1.2.3. Unknown versions (ok=false)
+// prefer config.ghostty. An existing file always wins so no second file is
+// created next to the one Ghostty actually reads.
+func ResolveConfigPathForVersion(ok bool, major, minor, patch int) string {
+	prefer := true
+	if ok {
+		prefer = ghostty.AtLeast123(major, minor, patch)
+	}
+	return resolveWithEnv(runtime.GOOS, os.Getenv("XDG_CONFIG_HOME"), homeDir(), fileExists, prefer)
 }
 
 func homeDir() string {
@@ -154,7 +168,7 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-func resolveWithEnv(goos, xdg, home string, exists func(string) bool) string {
+func resolveWithEnv(goos, xdg, home string, exists func(string) bool, preferGhostty bool) string {
 	xdgBase := xdg
 	if xdgBase == "" {
 		if goos == "darwin" {
@@ -187,7 +201,10 @@ func resolveWithEnv(goos, xdg, home string, exists func(string) bool) string {
 			return c
 		}
 	}
-	// Prefer config.ghostty for new files.
+	// Prefer config.ghostty for new files on recent Ghostty, else plain config.
+	if !preferGhostty {
+		return candidates[1]
+	}
 	return candidates[0]
 }
 

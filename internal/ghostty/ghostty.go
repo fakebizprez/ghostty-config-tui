@@ -5,6 +5,7 @@ package ghostty
 import (
 	"context"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -81,6 +82,65 @@ func runList(args ...string) ([]byte, Status, error) {
 		return nil, Status{Degraded: true, Warning: "ghostty list failed — type values manually"}, err
 	}
 	return out, Status{}, nil
+}
+
+// ParseVersion extracts major.minor.patch from `ghostty --version` output
+// such as "Ghostty 1.4.1-main+9781c0afc". Missing parts default to zero.
+func ParseVersion(out string) (major, minor, patch int, ok bool) {
+	for _, f := range strings.Fields(out) {
+		f = strings.TrimPrefix(f, "v")
+		if i := strings.IndexAny(f, "-+"); i >= 0 {
+			f = f[:i]
+		}
+		parts := strings.Split(f, ".")
+		if len(parts) < 2 || len(parts) > 3 {
+			continue
+		}
+		var nums []int
+		valid := true
+		for _, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 0 {
+				valid = false
+				break
+			}
+			nums = append(nums, n)
+		}
+		if !valid {
+			continue
+		}
+		for len(nums) < 3 {
+			nums = append(nums, 0)
+		}
+		return nums[0], nums[1], nums[2], true
+	}
+	return 0, 0, 0, false
+}
+
+// AtLeast123 reports whether a Ghostty version is at least 1.2.3.
+func AtLeast123(major, minor, patch int) bool {
+	if major != 1 {
+		return major > 1
+	}
+	if minor != 2 {
+		return minor > 2
+	}
+	return patch >= 3
+}
+
+// Version runs `ghostty --version`. ok is false when the binary is missing,
+// the call fails, or the output is unparseable.
+func Version() (major, minor, patch int, ok bool) {
+	if _, err := lookPath("ghostty"); err != nil {
+		return 0, 0, 0, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+	out, err := runCommand(ctx, "ghostty", "--version")
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return ParseVersion(string(out))
 }
 
 // ListThemes returns installed theme names (empty + degraded when missing).

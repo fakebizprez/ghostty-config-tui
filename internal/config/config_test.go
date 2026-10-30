@@ -49,6 +49,30 @@ func TestWriterAppendsMissing(t *testing.T) {
 	}
 }
 
+func TestForVersionNewFileDefault(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if got := ResolveConfigPathForVersion(true, 1, 4, 1); !strings.HasSuffix(got, "config.ghostty") {
+		t.Fatalf("new Ghostty should prefer config.ghostty, got %q", got)
+	}
+	if got := ResolveConfigPathForVersion(false, 0, 0, 0); !strings.HasSuffix(got, "config.ghostty") {
+		t.Fatalf("unknown version should prefer config.ghostty, got %q", got)
+	}
+	if got := ResolveConfigPathForVersion(true, 1, 1, 9); strings.HasSuffix(got, ".ghostty") {
+		t.Fatalf("old Ghostty should prefer plain config, got %q", got)
+	}
+}
+
+func TestVersionGatingExistingWins(t *testing.T) {
+	exists := func(p string) bool { return strings.HasSuffix(p, string(filepath.Separator)+"config") }
+	for _, prefer := range []bool{true, false} {
+		got := resolveWithEnv("linux", "/xdg", "/home/u", exists, prefer)
+		if got != "/xdg/ghostty/config" {
+			t.Fatalf("prefer=%v existing plain config should win, got %q", prefer, got)
+		}
+	}
+}
+
 func TestResolvePathXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
 	t.Setenv("HOME", "/tmp/home-test")
