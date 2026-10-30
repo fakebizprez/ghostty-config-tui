@@ -52,7 +52,7 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: ghostty-config-tui [--print] [--dry-run] [--version] [--help]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Keys: ↑/↓ or k/j navigate, Enter edit, Esc finish/cancel,")
-	fmt.Fprintln(w, "      s save, u undo, r/R reset field/all, q quit")
+	fmt.Fprintln(w, "      s save, u undo, r/R reset field/all, / filter, q quit")
 	fmt.Fprintln(w, "After save, reload Ghostty with ctrl+shift+r.")
 }
 

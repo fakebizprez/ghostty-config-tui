@@ -5,12 +5,22 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
 	"ghostty-config-tui/internal/schema"
 )
+
+// BlinkMsg flips the cursor blink phase on every tick.
+type BlinkMsg struct{}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(530*time.Millisecond, func(time.Time) tea.Msg {
+		return BlinkMsg{}
+	})
+}
 
 // Options wires the model to storage and picker data.
 type Options struct {
@@ -35,6 +45,9 @@ type Model struct {
 	onSave       func(map[string]string) error
 	onUndo       func() (map[string]string, error)
 	dryRun       bool
+	filter       string
+	filtering    bool
+	blinkPhase   bool
 	message      string
 	quitting     bool
 	width        int
@@ -63,13 +76,36 @@ func New(opts Options) Model {
 		onSave:       opts.OnSave,
 		onUndo:       opts.OnUndo,
 		dryRun:       opts.DryRun,
+		blinkPhase:   true,
 		width:        80,
 		height:       24,
 	}
 }
 
 // Init implements tea.Model.
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return tickCmd() }
+
+// visible returns the sidebar settings matching the current filter.
+func (m Model) visible() []schema.Setting {
+	if m.filter == "" {
+		return m.keys
+	}
+	return schema.Search(m.filter)
+}
+
+// Visible returns the sidebar settings matching the current filter.
+func (m Model) Visible() []schema.Setting { return m.visible() }
+
+// Filter returns the current sidebar search text.
+func (m Model) Filter() string { return m.filter }
+
+func (m *Model) clampCursor() {
+	if vis := m.visible(); len(vis) == 0 {
+		m.cursor = 0
+	} else if m.cursor >= len(vis) {
+		m.cursor = len(vis) - 1
+	}
+}
 
 // Cursor returns the sidebar cursor.
 func (m Model) Cursor() int { return m.cursor }
@@ -109,25 +145,60 @@ func (m Model) StatusBar() string {
 	if m.message != "" {
 		msg = " — " + m.message
 	}
-	return fmt.Sprintf("%s | %s%s | s save u undo r/R reset q quit%s", m.configPath, dirty, dry, msg)
+	return fmt.Sprintf("%s | %s%s | s save u undo r/R reset / filter q quit%s", m.configPath, dirty, dry, msg)
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case BlinkMsg:
+		m.blinkPhase = !m.blinkPhase
+		return m, tickCmd()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
 	case tea.KeyPressMsg:
 		key := msg.String()
-		text := msg.Text
+		if m.filtering {
+			switch key {
+			case "esc":
+				m.filtering = false
+				m.filter = ""
+				m.clampCursor()
+				return m, nil
+			case "enter":
+				m.filtering = false
+				m.clampCursor()
+				return m, nil
+			case "backspace":
+				if len(m.filter) > 0 {
+					m.filter = m.filter[:len(m.filter)-1]
+				}
+				m.clampCursor()
+				return m, nil
+			default:
+				t := msg.Text
+				if t == "" {
+					if len(key) != 1 {
+						return m, nil
+					}
+					t = key
+				}
+				m.filter += t
+				m.clampCursor()
+				return m, nil
+			}
+		}
 		switch key {
 		case "q", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
+		case "/":
+			m.filtering = true
+			return m, nil
 		case "down", "j":
-			if m.cursor < len(m.keys)-1 {
+			if m.cursor < len(m.visible())-1 {
 				m.cursor++
 			}
 			return m, nil
@@ -171,8 +242,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = "undo restored"
 			return m, nil
 		case "r":
-			if len(m.keys) > 0 {
-				k := m.keys[m.cursor].Key
+			if vis := m.visible(); len(vis) > 0 {
+				k := vis[m.cursor].Key
 				if v, ok := m.orig[k]; ok {
 					m.values[k] = v
 				} else {
@@ -189,8 +260,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = "reset all"
 			return m, nil
 		case "enter":
-			if len(m.keys) > 0 {
-				k := m.keys[m.cursor].Key
+			if vis := m.visible(); len(vis) > 0 {
+				k := vis[m.cursor].Key
 				m.message = k + " = " + m.values[k]
 			}
 			return m, nil
@@ -198,7 +269,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = ""
 			return m, nil
 		default:
-			_ = text
 			return m, nil
 		}
 	}
@@ -214,7 +284,12 @@ func (m Model) View() tea.View {
 	names := make([]string, 0, len(m.keys))
 	_ = names
 	_ = sort.StringSlice{}
-	for i, s := range m.keys {
+	if m.filtering {
+		fmt.Fprintf(&sb, "/%s\n", m.filter)
+	} else if m.filter != "" {
+		fmt.Fprintf(&sb, "filter: %s (esc clears)\n", m.filter)
+	}
+	for i, s := range m.visible() {
 		cursor := "  "
 		if i == m.cursor {
 			cursor = "> "
@@ -238,16 +313,57 @@ func (m Model) View() tea.View {
 	return v
 }
 
+// defaultPalette is the fallback 16-color swatch row for the preview.
+var defaultPalette = []string{
+	"#000000", "#800000", "#008000", "#808000",
+	"#000080", "#800080", "#008080", "#c0c0c0",
+	"#808080", "#ff0000", "#00ff00", "#ffff00",
+	"#0000ff", "#ff00ff", "#00ffff", "#ffffff",
+}
+
+func cursorGlyph(style string) string {
+	switch style {
+	case "bar":
+		return "▏"
+	case "underline":
+		return "▁"
+	default:
+		return "█"
+	}
+}
+
+func blinkEnabled(m Model) bool {
+	v := firstNonEmpty(m.values["cursor-style-blink"], schema.Defaults()["cursor-style-blink"])
+	on, _ := schema.ParseBool(v)
+	return on
+}
+
 func previewBlock(m Model) string {
 	bg := firstNonEmpty(m.values["background"], schema.Defaults()["background"])
+	if !schema.ValidateColor(bg) {
+		bg = schema.Defaults()["background"]
+	}
 	fg := firstNonEmpty(m.values["foreground"], schema.Defaults()["foreground"])
-	cursor := firstNonEmpty(m.values["cursor-style"], "block")
-	_ = cursor
+	if !schema.ValidateColor(fg) {
+		fg = schema.Defaults()["foreground"]
+	}
 	box := lipgloss.NewStyle().
 		Background(lipgloss.Color(bg)).
 		Foreground(lipgloss.Color(fg)).
 		Render("  AaBbCc 0123  ")
-	return "preview: " + box
+	var pal strings.Builder
+	for _, c := range defaultPalette {
+		pal.WriteString(lipgloss.NewStyle().Background(lipgloss.Color(c)).Render("  "))
+	}
+	glyph := cursorGlyph(firstNonEmpty(m.values["cursor-style"], "block"))
+	blink := "off"
+	if blinkEnabled(m) {
+		blink = "on"
+		if !m.blinkPhase {
+			glyph = " "
+		}
+	}
+	return "preview: " + box + "\n" + "palette: " + pal.String() + "\n" + "cursor: " + glyph + " (blink " + blink + ")"
 }
 
 func firstNonEmpty(vals ...string) string {

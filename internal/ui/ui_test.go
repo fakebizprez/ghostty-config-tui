@@ -104,3 +104,89 @@ func TestStatusBarPath(t *testing.T) {
 		t.Fatalf("status bar = %q", m.StatusBar())
 	}
 }
+
+func typeFilter(t *testing.T, m Model, s string) Model {
+	t.Helper()
+	updated, _ := m.Update(keyPress("/"))
+	m = updated.(Model)
+	for _, r := range s {
+		updated, _ = m.Update(keyPress(string(r)))
+		m = updated.(Model)
+	}
+	return m
+}
+
+func visibleKeys(m Model) []string {
+	names := []string{}
+	for _, s := range m.Visible() {
+		names = append(names, s.Key)
+	}
+	return names
+}
+
+func TestFilterNarrowsSidebar(t *testing.T) {
+	m := typeFilter(t, New(testOptions()), "font")
+	got := visibleKeys(m)
+	if len(got) != 2 || got[0] != "font-family" || got[1] != "font-size" {
+		t.Fatalf("filter font visible = %v, want [font-family font-size]", got)
+	}
+}
+
+func TestFilterEscClears(t *testing.T) {
+	m := typeFilter(t, New(testOptions()), "font")
+	updated, _ := m.Update(keyPress("esc"))
+	m = updated.(Model)
+	if m.Filter() != "" || len(m.Visible()) != 8 {
+		t.Fatalf("esc should clear filter, got %q with %d visible", m.Filter(), len(m.Visible()))
+	}
+}
+
+func TestFilterEnterKeeps(t *testing.T) {
+	m := typeFilter(t, New(testOptions()), "cursor")
+	updated, _ := m.Update(keyPress("enter"))
+	m = updated.(Model)
+	if m.Filter() == "" || len(m.Visible()) != 2 {
+		t.Fatalf("enter should keep filter, got %q with %d visible", m.Filter(), len(m.Visible()))
+	}
+}
+
+func TestPreviewCursorGlyphs(t *testing.T) {
+	m := New(testOptions())
+	if !strings.Contains(previewBlock(m), "█") {
+		t.Fatalf("default block cursor missing:\n%s", previewBlock(m))
+	}
+	m.SetValue("cursor-style", "bar")
+	if !strings.Contains(previewBlock(m), "▏") {
+		t.Fatalf("bar cursor missing:\n%s", previewBlock(m))
+	}
+	m.SetValue("cursor-style", "underline")
+	if !strings.Contains(previewBlock(m), "▁") {
+		t.Fatalf("underline cursor missing:\n%s", previewBlock(m))
+	}
+}
+
+func TestPreviewShowsPalette(t *testing.T) {
+	m := New(testOptions())
+	if !strings.Contains(previewBlock(m), "palette") {
+		t.Fatalf("palette row missing:\n%s", previewBlock(m))
+	}
+}
+
+func TestBlinkTickFlipsCursor(t *testing.T) {
+	m := New(testOptions())
+	m.SetValue("cursor-style", "block")
+	m.SetValue("cursor-style-blink", "true")
+	if !strings.Contains(previewBlock(m), "█") {
+		t.Fatalf("cursor should start visible:\n%s", previewBlock(m))
+	}
+	updated, _ := m.Update(BlinkMsg{})
+	m = updated.(Model)
+	if strings.Contains(previewBlock(m), "█") {
+		t.Fatalf("cursor should hide on blink phase:\n%s", previewBlock(m))
+	}
+	updated, _ = m.Update(BlinkMsg{})
+	m = updated.(Model)
+	if !strings.Contains(previewBlock(m), "█") {
+		t.Fatalf("cursor should return on next phase:\n%s", previewBlock(m))
+	}
+}
