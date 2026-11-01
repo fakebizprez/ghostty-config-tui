@@ -42,3 +42,24 @@ func TestFindPrefersRegularFace(t *testing.T) {
 		t.Fatalf("Find picked %s, want the Regular face", p)
 	}
 }
+
+func TestHarfBuzzShapesVariableFontLigatures(t *testing.T) {
+	path, ok := Find("Cascadia Code")
+	if !ok || !hasHBShape() {
+		t.Skip("needs Cascadia Code and hb-shape")
+	}
+	shaped, plain, err := glyphIDs(path, "->")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shaped) == len(plain) && shaped[0] == plain[0] && shaped[1] == plain[1] {
+		t.Fatalf("Cascadia -> not substituted: %v", shaped)
+	}
+}
+
+func TestParseHBShape(t *testing.T) {
+	got, err := parseHB("[1970=0+1200|2728=1@-10,5+1200]")
+	if err != nil || len(got) != 2 || got[0].gid != 1970 || got[1].xoff != -10 || got[1].yoff != 5 || got[1].adv != 1200 {
+		t.Fatalf("parseHB = %+v err=%v", got, err)
+	}
+}

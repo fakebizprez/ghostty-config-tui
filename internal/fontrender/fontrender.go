@@ -4,14 +4,19 @@ package fontrender
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-text/typesetting/di"
 	gofont "github.com/go-text/typesetting/font"
@@ -154,14 +159,79 @@ func shape(face *gofont.Face, text string, px float64) shaping.Output {
 	})
 }
 
+// hbGlyph is one glyph from HarfBuzz's hb-shape, in font units.
+type hbGlyph struct {
+	gid             gofont.GID
+	xoff, yoff, adv int
+}
+
+var hbPath, _ = exec.LookPath("hb-shape")
+
+func hasHBShape() bool { return hbPath != "" }
+
+// hbShape shapes with the real HarfBuzz CLI when installed; go-text's
+// shaper misses some variable-font substitutions (e.g. Cascadia Code).
+func hbShape(path, text string) ([]hbGlyph, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, hbPath, "--no-glyph-names", path, "--", text).Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseHB(string(out))
+}
+
+// parseHB reads `[gid=cluster@x,y+adv|...]`.
+func parseHB(out string) ([]hbGlyph, error) {
+	out = strings.Trim(strings.TrimSpace(out), "[]")
+	if out == "" {
+		return nil, nil
+	}
+	var gs []hbGlyph
+	for _, item := range strings.Split(out, "|") {
+		var g hbGlyph
+		gid, rest, ok := strings.Cut(item, "=")
+		n, err := strconv.Atoi(gid)
+		if !ok || err != nil {
+			return nil, fmt.Errorf("bad hb-shape glyph %q", item)
+		}
+		g.gid = gofont.GID(n)
+		pos, adv, _ := strings.Cut(rest, "+")
+		g.adv, _ = strconv.Atoi(adv)
+		if _, off, ok := strings.Cut(pos, "@"); ok {
+			x, y, _ := strings.Cut(off, ",")
+			g.xoff, _ = strconv.Atoi(x)
+			g.yoff, _ = strconv.Atoi(y)
+		}
+		gs = append(gs, g)
+	}
+	return gs, nil
+}
+
+// glyphRun shapes a line into glyphs positioned in pixels.
+func glyphRun(face *gofont.Face, path, text string, px float64) (glyphs []hbGlyph, scale float32) {
+	unit := float32(px) / float32(face.Upem())
+	if hasHBShape() {
+		if gs, err := hbShape(path, text); err == nil {
+			return gs, unit
+		}
+	}
+	// go-text positions are 26.6 fixed pixels; express them as 1/64 px units.
+	for _, g := range shape(face, text, px).Glyphs {
+		glyphs = append(glyphs, hbGlyph{gid: g.GlyphID, xoff: int(g.XOffset), yoff: int(g.YOffset), adv: int(g.XAdvance)})
+	}
+	return glyphs, 1.0 / 64
+}
+
 // glyphIDs returns shaped glyph ids next to plain cmap ids (for tests).
 func glyphIDs(path, text string) (shaped, plain []gofont.GID, err error) {
 	face, err := loadFace(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, g := range shape(face, text, 30).Glyphs {
-		shaped = append(shaped, g.GlyphID)
+	gs, _ := glyphRun(face, path, text, 30)
+	for _, g := range gs {
+		shaped = append(shaped, g.gid)
 	}
 	for _, r := range text {
 		gid, _ := face.NominalGlyph(r)
@@ -181,22 +251,31 @@ func Render(path string, lines []string, px float64, bg, fg color.Color) (image.
 	}
 	scale := float32(px) / float32(face.Upem())
 	lineH := int(px*1.35) + 4
-	runs := make([]shaping.Output, len(lines))
+	type run struct {
+		gs   []hbGlyph
+		unit float32
+	}
+	runs := make([]run, len(lines))
 	w := 0
 	for i, l := range lines {
-		runs[i] = shape(face, l, px)
-		w = max(w, runs[i].Advance.Ceil())
+		gs, unit := glyphRun(face, path, l, px)
+		runs[i] = run{gs, unit}
+		adv := 0
+		for _, g := range gs {
+			adv += g.adv
+		}
+		w = max(w, int(float32(adv)*unit)+1)
 	}
 	img := image.NewRGBA(image.Rect(0, 0, w+24, lineH*len(lines)+16))
 	draw.Draw(img, img.Bounds(), image.NewUniform(bg), image.Point{}, draw.Src)
 	ras := vector.NewRasterizer(img.Bounds().Dx(), img.Bounds().Dy())
-	for i, run := range runs {
+	for i, r := range runs {
 		x := float32(12)
 		base := float32(8 + i*lineH + int(px))
-		for _, g := range run.Glyphs {
-			ox := x + float32(g.XOffset)/64
-			oy := base - float32(g.YOffset)/64
-			if out, ok := face.GlyphData(g.GlyphID).(gofont.GlyphOutline); ok {
+		for _, g := range r.gs {
+			ox := x + float32(g.xoff)*r.unit
+			oy := base - float32(g.yoff)*r.unit
+			if out, ok := face.GlyphData(g.gid).(gofont.GlyphOutline); ok {
 				pt := func(p ot.SegmentPoint) (float32, float32) { return ox + p.X*scale, oy - p.Y*scale }
 				for _, seg := range out.Segments {
 					a := seg.Args
@@ -218,7 +297,7 @@ func Render(path string, lines []string, px float64, bg, fg color.Color) (image.
 				}
 				ras.ClosePath()
 			}
-			x += float32(g.XAdvance) / 64
+			x += float32(g.adv) * r.unit
 		}
 	}
 	ras.Draw(img, img.Bounds(), image.NewUniform(fg), image.Point{})

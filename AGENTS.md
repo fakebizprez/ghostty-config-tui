@@ -79,7 +79,7 @@ Keys Ghostty does not know are preserved untouched.
 ### Non-goals
 
 - Plugin system, network sync
-- Per-glyph fallback inside the playground image (it draws one font file); the `+show-face` table covers fallback. Shaping uses go-text/typesetting, which misses some variable-font ligatures (e.g. Cascadia Code) that HarfBuzz applies
+- Per-glyph fallback inside the playground image (it draws one font file); the `+show-face` table covers fallback. Shaping uses the HarfBuzz CLI (`hb-shape`) when installed, else go-text/typesetting, which misses some variable-font ligatures (e.g. Cascadia Code)
 - Native macOS preference pane (this stays a terminal app)
 
 ### Out-of-scope languages
