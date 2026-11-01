@@ -158,7 +158,7 @@ func (m Model) playgroundLines(w int) []string {
 	out := []string{"font-family: " + hi.Render(fam) + faint.Render("  (staged values, unsaved edits included)"), ""}
 	switch {
 	case m.fontImg:
-		out = append(out, faint.Render("Rendered with "+filepath.Base(m.fontFile)+" (no ligature shaping; missing glyphs show as boxes):"))
+		out = append(out, faint.Render("Rendered with "+filepath.Base(m.fontFile)+" (shaped, so ligatures apply; glyphs this font lacks show as boxes):"))
 		out = append(out, graphics.Placeholder(fontID, m.fontCols, m.fontRows)...)
 	default:
 		if m.fontErr != "" {
