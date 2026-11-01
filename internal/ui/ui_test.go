@@ -451,3 +451,26 @@ func TestPluralEntries(t *testing.T) {
 		t.Fatalf("plural = %q", got)
 	}
 }
+
+func TestTypeInPreview(t *testing.T) {
+	m, s := newModel(map[string][]string{"font-size": {"12"}})
+	m = goTo(t, m, "font-size")
+	m = press(m, "d", "t")
+	m = typeText(m, "ls -la")
+	if s := ansi.Strip(m.Render()); !strings.Contains(s, "❯ ls -la") {
+		t.Fatalf("typed text missing from preview:\n%s", s)
+	}
+	m = press(m, "s", "q")
+	if len(s.calls) != 0 || m.Dirty() == false {
+		t.Fatal("keys typed into the preview must not trigger save/quit")
+	}
+	m = press(m, "enter")
+	out := ansi.Strip(m.Render())
+	if !strings.Contains(out, "❯ ls -lasq") || strings.Count(out, "❯ ls -lasq") != 1 {
+		t.Fatalf("enter should move the command into the preview history:\n%s", out)
+	}
+	m = press(m, "esc")
+	if m.typing {
+		t.Fatal("esc should leave preview typing mode")
+	}
+}

@@ -14,7 +14,7 @@ A fullscreen terminal editor for **every** [Ghostty](https://ghostty.org) settin
   - Checkbox lists for comma-separated flag settings. Only flags that differ from the default are written.
   - A list editor for settings that repeat, like `font-family` fallbacks, `font-feature`, `palette`, and `env`.
 - **Keybinding builder.** Set prefixes (`global:`, `all:` and the rest), record a trigger by pressing the keys, build key sequences, and pick an action from `+list-actions`. You get live validation and a warning when you override one of Ghostty's default bindings.
-- **Live preview.** A mock terminal draws your theme and explicit colors, the 16-color palette, selection colors, and the cursor's style and blink. While you browse themes, the preview follows the highlighted one.
+- **Live preview.** A mock terminal you can type into (`t`) draws your theme and explicit colors, the 16-color palette, selection colors, and the cursor's style and blink. While you browse themes, the preview follows the highlighted one.
 - **Safe writes.** Only keys you changed are rewritten. Comments, unknown keys, and every other line stay byte-for-byte. Writes are atomic and keep file permissions. `u` restores the file exactly as it was before your last save. After each save, Ghostty's `+validate-config` checks the file and reports any problems.
 - **Import and export.** Paste a config or load one from a file; the values are staged until you save. Export a minimal config (only values that differ from the defaults) to the clipboard (OSC 52) or to a file.
 
@@ -41,6 +41,7 @@ go build -o ghostty-config-tui .
 | `d` | reset to Ghostty default (removes the line) |
 | `i` / `x` | import / export |
 | `p` | toggle preview |
+| `t` | type into the preview terminal |
 | `?` | help |
 | `q` | quit (asks again if there are unsaved changes) |
 

@@ -620,8 +620,10 @@ func (m Model) statusLines(w int) string {
 		hints = "enter apply · esc cancel"
 	case m.searching:
 		hints = "type to search keys and docs · enter keep results · esc clear"
+	case m.typing:
+		hints = "type into the preview terminal · enter run · esc stop"
 	default:
-		hints = "↑↓ move · ←→ pane · enter edit · / search · s save · u undo · r revert · d default · i import · x export · p preview · q quit"
+		hints = "↑↓ move · ←→ pane · enter edit · / search · s save · u undo · r revert · d default · i import · x export · p preview · t type · q quit"
 	}
 	return fit(line1, w) + "\n" + fit(faint.Render(" "+hints), w)
 }
@@ -674,7 +676,7 @@ var helpLines = []string{
 	bold.Render("Navigate"),
 	"  ↑/↓ j/k       move          ←/→ h/l tab   switch categories / settings",
 	"  /             search every key and its docs      g/G   first / last",
-	"  pgup/pgdn     scroll docs   p   toggle live preview",
+	"  pgup/pgdn     scroll docs   p   toggle live preview   t   type into the preview",
 	"",
 	bold.Render("Edit"),
 	"  enter         edit (bools toggle; lists open the list editor)",

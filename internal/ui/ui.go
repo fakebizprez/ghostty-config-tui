@@ -96,6 +96,10 @@ type Model struct {
 	dlgBuf string
 	dlgOff int
 
+	typing  bool     // keys go to the preview's prompt
+	typed   string   // current preview command line
+	history []string // last preview commands
+
 	msg         string
 	msgErr      bool
 	armed       string // "q" or "u" awaiting confirmation
@@ -312,6 +316,8 @@ func (m Model) paste(s string) Model {
 	switch {
 	case m.dlg == dlgImport || m.dlg == dlgExportPath:
 		m.dlgBuf += s
+	case m.typing:
+		m.typed += strings.ReplaceAll(s, "\n", " ")
 	case m.ed != nil:
 		m.ed.paste(s)
 	}
@@ -329,6 +335,24 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.ed != nil {
 		cmd := m.editKey(msg)
 		return m, cmd
+	}
+	if m.typing {
+		switch k {
+		case "esc":
+			m.typing = false
+			m.note("")
+		case "enter":
+			m.history = append(m.history, m.typed)
+			if len(m.history) > 2 {
+				m.history = m.history[1:]
+			}
+			m.typed = ""
+		case "backspace":
+			m.typed = trimLast(m.typed)
+		default:
+			m.typed += msg.Text
+		}
+		return m, nil
 	}
 	if m.searching {
 		switch k {
@@ -387,6 +411,9 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.row = max(0, len(rows)-1)
 	case "p":
 		m.showPreview = !m.showPreview
+	case "t":
+		m.typing, m.showPreview = true, true
+		m.note("typing in the preview — esc to stop")
 	case "enter", "e", "space", " ":
 		if m.pane == paneCats {
 			m.pane = paneSettings

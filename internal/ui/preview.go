@@ -174,6 +174,13 @@ func (m Model) previewLines(w int) []string {
 		pc.line(w, swatches(8)...),
 		pc.line(w, append(prompt("echo "), seg{text: "selected text", fg: pc.SelFG, bg: pc.SelBG}, seg{text: " "}, cursor)...),
 	}
+	// Typed commands replace the canned git lines; the prompt shows the input.
+	for i, cmd := range m.history {
+		lines[3+i] = pc.line(w, prompt(cmd)...)
+	}
+	if m.typing || m.typed != "" {
+		lines[7] = pc.line(w, append(prompt(m.typed), cursor)...)
+	}
 	opacity := firstNonEmpty(m.explicit("background-opacity"), "1")
 	blur := firstNonEmpty(m.explicit("background-blur"), "false")
 	lines = append(lines, faint.Render(" opacity "+opacity+" · blur "+blur+" · cursor "+m.effective("cursor-style")))
