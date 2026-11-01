@@ -73,12 +73,13 @@ Keys Ghostty does not know are preserved untouched.
 2. Detail pane: badges, value vs. default, the type-specific editor, wrapped docs
 3. Live preview: mock terminal using theme + explicit colors, palette, selection, cursor style and blink; the theme picker previews the highlighted theme
 4. Status bar: dirty count, messages, Ghostty validation results, key hints
-5. Dialogs: help, import (paste or path), export (clipboard via OSC 52 or file)
+5. Dialogs: help, import (paste, path, or share link), export (clipboard via OSC 52, file, or a ghostty.zerebos.com share link), font playground (`ghostty +show-face` against staged fonts)
+6. App icon preview on `macos-icon*` settings; type-into preview prompt (`t`)
 
 ### Non-goals
 
-- Plugin system, network sync, URL sharing
-- Rendering other fonts (a terminal cannot); the preview shows the font name and size
+- Plugin system, network sync
+- Rendering other fonts (a terminal cannot); the font playground reports Ghostty's face resolution instead
 - Native macOS preference pane (this stays a terminal app)
 
 ### Out-of-scope languages

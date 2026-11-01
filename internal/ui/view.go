@@ -244,6 +244,9 @@ func (m Model) detailLines(w, h int) []string {
 	if !ok {
 		return out
 	}
+	if strings.HasPrefix(st.Key, "macos-icon") {
+		out = append(out, m.iconLines()...)
+	}
 	out = append(out, bold.Render(st.Title)+"  "+m.badges(st))
 	if m.ed != nil {
 		out = append(out, m.editorLines(m.ed, w)...)
@@ -623,7 +626,7 @@ func (m Model) statusLines(w int) string {
 	case m.typing:
 		hints = "type into the preview terminal · enter run · esc stop"
 	default:
-		hints = "↑↓ move · ←→ pane · enter edit · / search · s save · u undo · r revert · d default · i import · x export · p preview · t type · q quit"
+		hints = "↑↓ move · ←→ pane · enter edit · / search · s save · u undo · r revert · d default · i import · x export · f fonts · p preview · t type · q quit"
 	}
 	return fit(line1, w) + "\n" + fit(faint.Render(" "+hints), w)
 }
@@ -636,6 +639,8 @@ func (m Model) dialogTitle() string {
 		return "Import config"
 	case dlgExport:
 		return "Export minimal config"
+	case dlgFonts:
+		return "Font playground"
 	}
 	return "Export to file"
 }
@@ -644,6 +649,8 @@ func (m Model) dialogLines(w, h int) []string {
 	switch m.dlg {
 	case dlgHelp:
 		return helpLines
+	case dlgFonts:
+		return m.playgroundLines(w)
 	case dlgImport:
 		lines := strings.Split(m.dlgBuf, "\n")
 		out := []string{
@@ -667,7 +674,11 @@ func (m Model) dialogLines(w, h int) []string {
 	if text == "" {
 		text = "# every setting is at its Ghostty default\n"
 	}
-	lines := append([]string{faint.Render("c copy to clipboard (OSC 52) · w write to file · ↑↓ scroll · esc close"), ""}, strings.Split(strings.TrimRight(text, "\n"), "\n")...)
+	share := "u copy share link"
+	if _, ok := m.ShareURL(); !ok {
+		share = "share link unavailable (too large)"
+	}
+	lines := append([]string{faint.Render("c copy to clipboard (OSC 52) · w write to file · " + share + " · ↑↓ scroll · esc close"), ""}, strings.Split(strings.TrimRight(text, "\n"), "\n")...)
 	off := min(m.dlgOff, max(0, len(lines)-h))
 	return lines[off:]
 }
@@ -692,7 +703,8 @@ var helpLines = []string{
 	"",
 	bold.Render("File"),
 	"  s             save (atomic; only changed keys are rewritten)",
-	"  u             undo the last save        i / x   import / export",
+	"  u             undo the last save        i / x   import (file, paste, share link) / export",
+	"  f             font playground: which face Ghostty picks for each glyph",
 	"  q             quit (asks again when there are unsaved changes)",
 	"",
 	faint.Render("After saving, reload Ghostty with ctrl+shift+r. Press any key to close."),

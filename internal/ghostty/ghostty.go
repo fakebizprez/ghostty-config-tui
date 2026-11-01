@@ -204,3 +204,23 @@ func Validate(path string) (problems []string, ok bool) {
 var validateCommand = func(ctx context.Context, path string) ([]byte, error) {
 	return exec.CommandContext(ctx, "ghostty", "+validate-config", "--config-file="+path).CombinedOutput()
 }
+
+// ShowFace runs `ghostty +show-face --string=sample` with the given
+// font-family overrides and returns one line per codepoint.
+func ShowFace(sample string, families []string) ([]string, bool) {
+	args := []string{"+show-face", "--string=" + sample}
+	for _, f := range families {
+		args = append(args, "--font-family="+f)
+	}
+	out, ok := runGhostty(args...)
+	if !ok {
+		return nil, false
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines, true
+}

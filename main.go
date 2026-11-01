@@ -18,6 +18,7 @@ const version = "0.2.0"
 type flags struct {
 	print   bool
 	export  bool
+	share   bool
 	dryRun  bool
 	version bool
 	help    bool
@@ -34,6 +35,8 @@ func parseFlags(args []string) (flags, []string, error) {
 			f.print = true
 		case a == "--export":
 			f.export = true
+		case a == "--share":
+			f.share = true
 		case a == "--dry-run":
 			f.dryRun = true
 		case a == "--version":
@@ -61,11 +64,12 @@ func parseFlags(args []string) (flags, []string, error) {
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "ghostty-config-tui — fullscreen TUI for every Ghostty setting")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Usage: ghostty-config-tui [--config PATH] [--print] [--export] [--dry-run] [--version] [--help]")
+	fmt.Fprintln(w, "Usage: ghostty-config-tui [--config PATH] [--print] [--export] [--share] [--dry-run] [--version] [--help]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "  --config PATH  edit this file instead of the resolved Ghostty config")
 	fmt.Fprintln(w, "  --print        print every Ghostty setting set in the file and exit")
 	fmt.Fprintln(w, "  --export       print a minimal config grouped by category and exit")
+	fmt.Fprintln(w, "  --share        print a ghostty.zerebos.com link that opens this config and exit")
 	fmt.Fprintln(w, "  --dry-run      edit without writing; saves are previewed only")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Keys: ↑/↓ move, ←/→ pane, enter edit, / search, s save, u undo,")
@@ -202,6 +206,20 @@ func run(stdout, stderr io.Writer, args []string, isTTY bool) int {
 		if !f.print {
 			fmt.Fprintln(stdout, "# dry-run: no changes written")
 		}
+		return 0
+	}
+	if f.share {
+		opts, err := newSession(path, true)
+		if err != nil {
+			fmt.Fprintln(stderr, "share: "+err.Error())
+			return 1
+		}
+		link, ok := ui.New(opts).ShareURL()
+		if !ok {
+			fmt.Fprintln(stderr, "share: config too large for a share link; use --export")
+			return 1
+		}
+		fmt.Fprintln(stdout, link)
 		return 0
 	}
 	if f.export {

@@ -474,3 +474,105 @@ func TestTypeInPreview(t *testing.T) {
 		t.Fatal("esc should leave preview typing mode")
 	}
 }
+
+func TestShareURLRoundTrip(t *testing.T) {
+	m, _ := newModel(map[string][]string{"theme": {"Nord"}, "font-size": {"15"}})
+	u, ok := m.ShareURL()
+	if !ok || !strings.HasPrefix(u, "https://ghostty.zerebos.com/app/import-export#share=") {
+		t.Fatalf("share url = %q ok=%v", u, ok)
+	}
+	text, err := DecodeShare(u)
+	if err != nil || text != "font-size = 15\ntheme = Nord\n" {
+		t.Fatalf("decoded %q err=%v", text, err)
+	}
+	// Importing a share link stages its values.
+	fresh, _ := newModel(nil)
+	fresh = press(fresh, "i")
+	mm, _ := fresh.Update(tea.PasteMsg{Content: u})
+	fresh = press(mm.(Model), "enter")
+	if fresh.Values()["theme"][0] != "Nord" || fresh.Values()["font-size"][0] != "15" {
+		t.Fatalf("imported share link: %v (%s)", fresh.Values(), fresh.Message())
+	}
+}
+
+func TestShareURLTooLong(t *testing.T) {
+	var binds []string
+	for i := 0; i < 80; i++ {
+		binds = append(binds, "ctrl+shift+f"+itoa(i)+"=goto_tab:"+itoa(i))
+	}
+	m, _ := newModel(map[string][]string{"keybind": binds})
+	if _, ok := m.ShareURL(); ok {
+		t.Fatal("share URL over 1800 chars should be refused like the web app does")
+	}
+	m = press(m, "x")
+	if _, cmd := m.Update(key("u")); cmd != nil {
+		t.Fatal("too-long share must not copy anything")
+	}
+}
+
+func TestExportCopiesShareURL(t *testing.T) {
+	m, _ := newModel(map[string][]string{"theme": {"Nord"}})
+	m = press(m, "x")
+	mm, cmd := m.Update(key("u"))
+	if cmd == nil || !strings.Contains(mm.(Model).Message(), "share link") {
+		t.Fatalf("u should copy the share link, msg=%q", mm.(Model).Message())
+	}
+}
+
+func TestFontPlaygroundUsesStagedFonts(t *testing.T) {
+	old := showFace
+	defer func() { showFace = old }()
+	var gotFamilies []string
+	showFace = func(sample string, families []string) ([]string, bool) {
+		gotFamilies = families
+		return []string{"U+2192 « → » found in face “Iosevka”."}, true
+	}
+	m, _ := newModel(map[string][]string{"font-family": {"Iosevka", "Symbols Nerd Font"}})
+	mm, cmd := m.Update(key("f"))
+	m = mm.(Model)
+	if cmd == nil {
+		t.Fatal("f should start a face lookup")
+	}
+	mm, _ = m.Update(cmd())
+	out := ansi.Strip(mm.(Model).Render())
+	if !strings.Contains(out, "Font playground") || !strings.Contains(out, "-> => != <=") || !strings.Contains(out, "found in face “Iosevka”") {
+		t.Fatalf("playground render:\n%s", out)
+	}
+	if strings.Join(gotFamilies, ",") != "Iosevka,Symbols Nerd Font" {
+		t.Fatalf("show-face families = %v", gotFamilies)
+	}
+}
+
+func TestAppIconPreview(t *testing.T) {
+	m, _ := newModel(map[string][]string{"macos-icon": {"custom-style"}, "macos-icon-frame": {"beige"}, "macos-icon-ghost-color": {"#ff0000"}, "macos-icon-screen-color": {"#000080"}})
+	ic := m.IconColors()
+	if ic.Ghost != "#ff0000" || ic.Screen != "#000080" || ic.Frame != frameColors["beige"] {
+		t.Fatalf("icon colors = %+v", ic)
+	}
+	m = goTo(t, m, "macos-icon-frame")
+	if out := ansi.Strip(m.Render()); !strings.Contains(out, "App icon") {
+		t.Fatalf("icon preview missing for macos-icon settings:\n%s", out)
+	}
+	m = goTo(t, m, "font-size")
+	if out := ansi.Strip(m.Render()); strings.Contains(out, "App icon") {
+		t.Fatal("icon preview should only show for macos-icon settings")
+	}
+}
+
+func TestPlaygroundGroupsByFace(t *testing.T) {
+	got := groupFaces([]string{
+		"U+54 « T » found in face “Menlo”.",
+		"U+68 « h » found in face “Menlo”.",
+		"U+250C « ┌ » is handled by Ghostty's internal sprites.",
+		"U+2500 « ─ » is handled by Ghostty's internal sprites.",
+		"U+1F642 « 🙂 » found in face “Apple Color Emoji”.",
+	})
+	want := []string{
+		"found in face “Menlo”: T h",
+		"is handled by Ghostty's internal sprites: ┌ ─",
+		"found in face “Apple Color Emoji”: 🙂",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("groupFaces =\n%s", strings.Join(got, "\n"))
+	}
+}

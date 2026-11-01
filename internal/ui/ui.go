@@ -69,6 +69,7 @@ const (
 	dlgImport
 	dlgExport
 	dlgExportPath
+	dlgFonts
 )
 
 // ModifiedCategory lists every key set in the file or staged.
@@ -95,6 +96,10 @@ type Model struct {
 	dlg    dialog
 	dlgBuf string
 	dlgOff int
+
+	faces     []string // font playground results
+	facesOK   bool
+	facesDone bool
 
 	typing  bool     // keys go to the preview's prompt
 	typed   string   // current preview command line
@@ -287,6 +292,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.themeColors[ghostty.ThemeForMode(msg.Name)] = msg.Colors
 		}
 		return m, nil
+	case FacesMsg:
+		m.faces, m.facesOK, m.facesDone = msg.Lines, msg.OK, true
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -451,6 +459,9 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dlg, m.dlgBuf = dlgImport, ""
 	case "x":
 		m.dlg, m.dlgOff = dlgExport, 0
+	case "f":
+		m.dlg, m.faces, m.facesDone = dlgFonts, nil, false
+		return m, m.facesCmd()
 	}
 	return m, nil
 }
@@ -537,7 +548,7 @@ func (m Model) undo() (Model, tea.Cmd) {
 func (m Model) dialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
 	switch m.dlg {
-	case dlgHelp:
+	case dlgHelp, dlgFonts:
 		m.dlg = dlgNone
 	case dlgExport:
 		switch k {
@@ -549,6 +560,15 @@ func (m Model) dialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.SetClipboard(m.ExportText())
 		case "w":
 			m.dlg, m.dlgBuf = dlgExportPath, "~/ghostty-config-export.ghostty"
+		case "u":
+			link, ok := m.ShareURL()
+			if !ok {
+				m.noteErr("config too large for a share link (over 1800 chars) — use c or w instead")
+				return m, nil
+			}
+			m.dlg = dlgNone
+			m.note("copied share link for ghostty.zerebos.com to the clipboard")
+			return m, tea.SetClipboard(link)
 		case "down", "j":
 			m.dlgOff++
 		case "up", "k":
@@ -584,7 +604,14 @@ func (m Model) dialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) doImport() Model {
 	m.dlg = dlgNone
 	src := m.dlgBuf
-	if t := strings.TrimSpace(src); t != "" && !strings.ContainsAny(t, "\n=") {
+	if strings.Contains(src, "#share=") {
+		text, err := DecodeShare(src)
+		if err != nil {
+			m.noteErr("import failed: " + err.Error())
+			return m
+		}
+		src = text
+	} else if t := strings.TrimSpace(src); t != "" && !strings.ContainsAny(t, "\n=") {
 		b, err := os.ReadFile(expandHome(t))
 		if err != nil {
 			m.noteErr("import failed: " + err.Error())

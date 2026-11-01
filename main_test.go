@@ -254,3 +254,15 @@ func TestFailedSaveDoesNotLeakIntoNextSave(t *testing.T) {
 		t.Fatalf("reverted change leaked into the next save:\n%s", b)
 	}
 }
+
+func TestRunShare(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte("theme = Nord\n"), 0o644)
+	var out, errBuf bytes.Buffer
+	if code := run(&out, &errBuf, []string{"--share", "--config", p}, false); code != 0 {
+		t.Fatalf("share exit %d: %s", code, errBuf.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != "https://ghostty.zerebos.com/app/import-export#share=dGhlbWUgPSBOb3JkCg" {
+		t.Fatalf("share = %q", got)
+	}
+}

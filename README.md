@@ -16,7 +16,9 @@ A fullscreen terminal editor for **every** [Ghostty](https://ghostty.org) settin
 - **Keybinding builder.** Set prefixes (`global:`, `all:` and the rest), record a trigger by pressing the keys, build key sequences, and pick an action from `+list-actions`. You get live validation and a warning when you override one of Ghostty's default bindings.
 - **Live preview.** A mock terminal you can type into (`t`) draws your theme and explicit colors, the 16-color palette, selection colors, and the cursor's style and blink. While you browse themes, the preview follows the highlighted one.
 - **Safe writes.** Only keys you changed are rewritten. Comments, unknown keys, and every other line stay byte-for-byte. Writes are atomic and keep file permissions. `u` restores the file exactly as it was before your last save. After each save, Ghostty's `+validate-config` checks the file and reports any problems.
-- **Import and export.** Paste a config or load one from a file; the values are staged until you save. Export a minimal config (only values that differ from the defaults) to the clipboard (OSC 52) or to a file.
+- **Import, export, and share links.** Paste a config, load one from a file, or paste a share link; the values are staged until you save. Export a minimal config (only values that differ from the defaults) to the clipboard (OSC 52) or to a file. You can also copy a share link that opens your config in the [ghostty.zerebos.com](https://ghostty.zerebos.com) web app.
+- **Font playground (`f`).** Shows which font face Ghostty would use for ligatures, box drawing, Nerd Font and Powerline glyphs, CJK, and emoji, based on your staged `font-family` list. It uses `ghostty +show-face`.
+- **App icon preview.** On the `macos-icon*` settings, a block-art Dock icon shows your frame, ghost, and screen colors.
 
 ## Usage
 
@@ -27,6 +29,7 @@ go build -o ghostty-config-tui .
 ./ghostty-config-tui --dry-run       # edit without writing
 ./ghostty-config-tui --print         # print set values and exit
 ./ghostty-config-tui --export        # print a minimal config and exit
+./ghostty-config-tui --share         # print a ghostty.zerebos.com share link and exit
 ```
 
 | Key | Action |
@@ -39,7 +42,8 @@ go build -o ghostty-config-tui .
 | `s` / `u` | save / undo last save |
 | `r` / `R` | revert field / all unsaved changes |
 | `d` | reset to Ghostty default (removes the line) |
-| `i` / `x` | import / export |
+| `i` / `x` | import (file, paste, share link) / export (clipboard, file, share link) |
+| `f` | font playground |
 | `p` | toggle preview |
 | `t` | type into the preview terminal |
 | `?` | help |
