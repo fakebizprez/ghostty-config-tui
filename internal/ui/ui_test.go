@@ -420,3 +420,34 @@ func TestRecorderCapturesCtrlJ(t *testing.T) {
 		t.Fatalf("recorded %q, want ctrl+j", got)
 	}
 }
+
+func TestImportPasteWithCarriageReturns(t *testing.T) {
+	m, _ := newModel(nil)
+	m = press(m, "i")
+	// Terminals deliver pasted newlines as \r.
+	mm, _ := m.Update(tea.PasteMsg{Content: "cursor-style = underline\rfont-size = 15\r\nwindow-padding-x = 12\r"})
+	m = press(mm.(Model), "enter")
+	v := m.Values()
+	if len(v["cursor-style"]) != 1 || v["cursor-style"][0] != "underline" || v["font-size"][0] != "15" || v["window-padding-x"][0] != "12" {
+		t.Fatalf("imported %v", v)
+	}
+}
+
+func TestImportSkipsInvalidValues(t *testing.T) {
+	m, _ := newModel(nil)
+	m = press(m, "i")
+	mm, _ := m.Update(tea.PasteMsg{Content: "font-size = huge\ncursor-style = bar\n"})
+	m = press(mm.(Model), "enter")
+	if _, ok := m.Values()["font-size"]; ok {
+		t.Fatal("invalid font-size must not be staged")
+	}
+	if !strings.Contains(m.Message(), "1 invalid value skipped") {
+		t.Fatalf("message = %q", m.Message())
+	}
+}
+
+func TestPluralEntries(t *testing.T) {
+	if got := plural(2, "entry"); got != "2 entries" {
+		t.Fatalf("plural = %q", got)
+	}
+}

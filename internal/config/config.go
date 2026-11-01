@@ -3,6 +3,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -264,6 +265,13 @@ func resolveWithEnv(goos, xdg, home string, exists func(string) bool, preferGhos
 // AtomicWrite writes via same-dir temp file + rename, preserving perms
 // when perm is 0.
 func AtomicWrite(path, content string, perm os.FileMode) error {
+	// Write through symlinks (stow, chezmoi, home-manager) so the link survives.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o200 == 0 {
+		return fmt.Errorf("%s is read-only", path)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

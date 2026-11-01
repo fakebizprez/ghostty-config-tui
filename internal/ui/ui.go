@@ -307,6 +307,8 @@ func (m Model) recording() bool {
 }
 
 func (m Model) paste(s string) Model {
+	// Terminals deliver pasted newlines as \r or \r\n.
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 	switch {
 	case m.dlg == dlgImport || m.dlg == dlgExportPath:
 		m.dlgBuf += s
@@ -564,13 +566,25 @@ func (m Model) doImport() Model {
 		src = string(b)
 	}
 	f := config.Parse(src)
-	n, unknown := 0, 0
+	n, unknown, invalid := 0, 0, 0
 	for _, key := range f.Keys() {
-		if _, ok := m.sch.ByKey(key); !ok {
+		st, ok := m.sch.ByKey(key)
+		if !ok {
 			unknown++
 			continue
 		}
-		m.set(key, f.GetAll(key))
+		var vals []string
+		for _, v := range f.GetAll(key) {
+			if _, _, err := schema.Validate(st, v); err != nil {
+				invalid++
+				continue
+			}
+			vals = append(vals, v)
+		}
+		if len(vals) == 0 {
+			continue
+		}
+		m.set(key, vals)
 		n++
 	}
 	if n == 0 {
@@ -580,6 +594,9 @@ func (m Model) doImport() Model {
 	msg := "imported " + plural(n, "setting") + " — review, then s to save"
 	if unknown > 0 {
 		msg += " (" + plural(unknown, "unknown key") + " skipped)"
+	}
+	if invalid > 0 {
+		msg += " (" + plural(invalid, "invalid value") + " skipped)"
 	}
 	m.note(msg)
 	return m
@@ -645,6 +662,9 @@ func orNone(s string) string {
 func plural(n int, word string) string {
 	if n == 1 {
 		return "1 " + word
+	}
+	if strings.HasSuffix(word, "y") {
+		return itoa(n) + " " + strings.TrimSuffix(word, "y") + "ies"
 	}
 	return itoa(n) + " " + word + "s"
 }

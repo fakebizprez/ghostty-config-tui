@@ -162,3 +162,37 @@ func TestSetAllRemoveAndAppend(t *testing.T) {
 		t.Fatalf("Keys = %v", keys)
 	}
 }
+
+func TestAtomicWriteFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "dotfiles", "ghostty.conf")
+	os.MkdirAll(filepath.Dir(target), 0o755)
+	os.WriteFile(target, []byte("a = 1\n"), 0o640)
+	link := filepath.Join(dir, "config")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWrite(link, "a = 2\n", 0); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Lstat(link); fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("save replaced the symlink with a regular file")
+	}
+	if b, _ := os.ReadFile(target); string(b) != "a = 2\n" {
+		t.Fatalf("symlink target = %q", b)
+	}
+	if fi, _ := os.Stat(target); fi.Mode().Perm() != 0o640 {
+		t.Fatalf("target perms = %v", fi.Mode().Perm())
+	}
+}
+
+func TestAtomicWriteRefusesReadOnlyFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte("a = 1\n"), 0o444)
+	if err := AtomicWrite(p, "a = 2\n", 0); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("err = %v, want a read-only error", err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "a = 1\n" {
+		t.Fatalf("read-only file was overwritten: %q", b)
+	}
+}
