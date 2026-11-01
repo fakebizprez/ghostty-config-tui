@@ -208,5 +208,5 @@ func (m Model) cursorSeg(pc PreviewColors) seg {
 	case "block_hollow":
 		return seg{text: "▯", fg: pc.Cursor}
 	}
-	return seg{text: "a", fg: pc.CursorText, bg: pc.Cursor}
+	return seg{text: " ", fg: pc.CursorText, bg: pc.Cursor}
 }

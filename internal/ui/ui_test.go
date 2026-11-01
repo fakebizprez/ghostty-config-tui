@@ -576,3 +576,12 @@ func TestPlaygroundGroupsByFace(t *testing.T) {
 		t.Fatalf("groupFaces =\n%s", strings.Join(got, "\n"))
 	}
 }
+
+func TestBlockCursorDrawsEmptyCell(t *testing.T) {
+	m, _ := newModel(nil)
+	m = press(m, "t")
+	m = typeText(m, "ls")
+	if out := ansi.Strip(m.Render()); strings.Contains(out, "❯ lsa") {
+		t.Fatal("block cursor must not draw a letter after the typed text")
+	}
+}
