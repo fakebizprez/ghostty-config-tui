@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"ghostty-config-tui/internal/config"
 	"ghostty-config-tui/internal/ghostty"
@@ -12,34 +13,45 @@ import (
 	"ghostty-config-tui/internal/ui"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type flags struct {
 	print   bool
+	export  bool
 	dryRun  bool
 	version bool
 	help    bool
+	config  string
 }
 
 func parseFlags(args []string) (flags, []string, error) {
 	var f flags
 	var rest []string
-	for _, a := range args {
-		switch a {
-		case "--print":
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--print":
 			f.print = true
-		case "--dry-run":
+		case a == "--export":
+			f.export = true
+		case a == "--dry-run":
 			f.dryRun = true
-		case "--version":
+		case a == "--version":
 			f.version = true
-		case "--help", "-h":
+		case a == "--help" || a == "-h":
 			f.help = true
-		case "--":
-			continue
-		default:
-			if len(a) > 1 && a[0] == '-' {
-				return f, nil, fmt.Errorf("unknown flag %q", a)
+		case a == "--config":
+			if i+1 >= len(args) {
+				return f, nil, fmt.Errorf("--config needs a path")
 			}
+			i++
+			f.config = args[i]
+		case len(a) > 9 && a[:9] == "--config=":
+			f.config = a[9:]
+		case a == "--":
+		case len(a) > 1 && a[0] == '-':
+			return f, nil, fmt.Errorf("unknown flag %q", a)
+		default:
 			rest = append(rest, a)
 		}
 	}
@@ -47,16 +59,32 @@ func parseFlags(args []string) (flags, []string, error) {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "ghostty-config-tui — fullscreen TUI for Ghostty config")
+	fmt.Fprintln(w, "ghostty-config-tui — fullscreen TUI for every Ghostty setting")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Usage: ghostty-config-tui [--print] [--dry-run] [--version] [--help]")
+	fmt.Fprintln(w, "Usage: ghostty-config-tui [--config PATH] [--print] [--export] [--dry-run] [--version] [--help]")
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Keys: ↑/↓ or k/j navigate, Enter edit, Esc finish/cancel,")
-	fmt.Fprintln(w, "      s save, u undo, r/R reset field/all, / filter, q quit")
-	fmt.Fprintln(w, "After save, reload Ghostty with ctrl+shift+r.")
+	fmt.Fprintln(w, "  --config PATH  edit this file instead of the resolved Ghostty config")
+	fmt.Fprintln(w, "  --print        print every Ghostty setting set in the file and exit")
+	fmt.Fprintln(w, "  --export       print a minimal config grouped by category and exit")
+	fmt.Fprintln(w, "  --dry-run      edit without writing; saves are previewed only")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Keys: ↑/↓ move, ←/→ pane, enter edit, / search, s save, u undo,")
+	fmt.Fprintln(w, "      r/R revert, d default, i import, x export, ? help, q quit")
+	fmt.Fprintln(w, "After saving, reload Ghostty with ctrl+shift+r.")
 }
 
-// printConfig prints only managed keys set in the file, in schema order.
+// loadValues returns every known Ghostty key present in the file.
+func loadValues(f *config.File) map[string][]string {
+	out := map[string][]string{}
+	for _, k := range f.Keys() {
+		if _, ok := schema.ByKey(k); ok {
+			out[k] = f.GetAll(k)
+		}
+	}
+	return out
+}
+
+// printConfig prints known keys set in the file, in schema order.
 func printConfig(w io.Writer, path string) error {
 	if _, err := os.Stat(path); err != nil {
 		return err
@@ -65,8 +93,9 @@ func printConfig(w io.Writer, path string) error {
 	if err != nil {
 		return err
 	}
+	vals := loadValues(f)
 	for _, s := range schema.All() {
-		if v := f.Get(s.Key); v != "" {
+		for _, v := range vals[s.Key] {
 			fmt.Fprintf(w, "%s = %s\n", s.Key, v)
 		}
 	}
@@ -74,15 +103,75 @@ func printConfig(w io.Writer, path string) error {
 }
 
 // startProgram is stubbed in tests.
-var startProgram = func(opts ui.Options) error {
-	return ui.Run(opts)
+var startProgram = func(opts ui.Options) error { return ui.Run(opts) }
+
+// loadSchema swaps in the installed Ghostty's own option docs when possible.
+var loadSchema = func() string {
+	docs, ok := ghostty.DefaultDocs()
+	if !ok {
+		return "ghostty not found — using the bundled Ghostty 1.4 option list; pickers accept typed values"
+	}
+	actions, _ := ghostty.Actions()
+	schema.Use(docs, actions)
+	return ""
 }
 
-// resolvePath detects the Ghostty version so new files prefer config.ghostty
-// on Ghostty >= 1.2.3 and plain config on older releases.
-func resolvePath() string {
+func resolvePath(override string) string {
+	if override != "" {
+		return override
+	}
 	maj, min, pat, ok := ghostty.Version()
 	return config.ResolveConfigPathForVersion(ok, maj, min, pat)
+}
+
+// newSession wires save/undo to one config file. Each save snapshots the
+// file first so undo restores exactly what was there before that save.
+func newSession(path string, dryRun bool) (ui.Options, error) {
+	cf, err := config.ParseFile(path)
+	if err != nil {
+		return ui.Options{}, err
+	}
+	var backup *config.Backup
+	opts := ui.Options{ConfigPath: path, Values: loadValues(cf), DryRun: dryRun}
+	opts.OnSave = func(changed map[string][]string) ([]string, error) {
+		keys := make([]string, 0, len(changed))
+		for k := range changed {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			cf.SetAll(k, changed[k])
+		}
+		if dryRun {
+			return nil, nil
+		}
+		snap, err := config.Snapshot(path)
+		if err != nil {
+			return nil, err
+		}
+		if err := config.AtomicWrite(path, cf.Marshal(), 0); err != nil {
+			return nil, err
+		}
+		backup = snap
+		problems, _ := ghostty.Validate(path)
+		return problems, nil
+	}
+	opts.OnUndo = func() (map[string][]string, error) {
+		if backup == nil {
+			return nil, fmt.Errorf("no save to undo yet")
+		}
+		if err := backup.Restore(); err != nil {
+			return nil, err
+		}
+		backup = nil
+		fresh, err := config.ParseFile(path)
+		if err != nil {
+			return nil, err
+		}
+		*cf = *fresh
+		return loadValues(cf), nil
+	}
+	return opts, nil
 }
 
 func run(stdout, stderr io.Writer, args []string, isTTY bool) int {
@@ -100,93 +189,44 @@ func run(stdout, stderr io.Writer, args []string, isTTY bool) int {
 		fmt.Fprintln(stdout, "ghostty-config-tui "+version)
 		return 0
 	}
-	if f.print {
-		path := resolvePath()
+	warning := loadSchema()
+	path := resolvePath(f.config)
+	if f.print || (f.dryRun && !isTTY) {
 		if err := printConfig(stdout, path); err != nil {
 			fmt.Fprintln(stderr, "print: "+err.Error())
 			return 1
 		}
+		if !f.print {
+			fmt.Fprintln(stdout, "# dry-run: no changes written")
+		}
 		return 0
 	}
-
-	path := resolvePath()
-
-	// Dry-run without a TTY degrades to printing what would be edited.
-	if f.dryRun && !isTTY {
-		if err := printConfig(stdout, path); err != nil {
-			fmt.Fprintln(stderr, "dry-run: "+err.Error())
+	if f.export {
+		opts, err := newSession(path, true)
+		if err != nil {
+			fmt.Fprintln(stderr, "export: "+err.Error())
 			return 1
 		}
-		fmt.Fprintln(stdout, "# dry-run: no changes written")
+		fmt.Fprint(stdout, ui.New(opts).ExportText())
 		return 0
 	}
 	if !isTTY {
-		fmt.Fprintln(stderr, "no TTY: refusing to start fullscreen editor")
+		fmt.Fprintln(stderr, "no TTY: refusing to start fullscreen editor (try --print or --export)")
 		return 1
 	}
-
-	cf, err := config.ParseFile(path)
+	opts, err := newSession(path, f.dryRun)
 	if err != nil {
 		fmt.Fprintln(stderr, "load: "+err.Error())
 		return 1
 	}
-	values := cf.Values(managedKeys())
-
-	themes, _ := ghostty.ListThemes()
-	fonts, _ := ghostty.ListFonts()
-
-	backup, _ := config.Snapshot(path)
-
-	onSave := func(next map[string]string) error {
-		for _, s := range schema.All() {
-			if v, ok := next[s.Key]; ok {
-				cf.Set(s.Key, v)
-			} else {
-				// Leave absent keys absent; only rewrite managed keys present.
-				_ = s
-			}
-		}
-		if f.dryRun {
-			return nil
-		}
-		return config.AtomicWrite(path, cf.Marshal(), 0)
-	}
-	onUndo := func() (map[string]string, error) {
-		if backup == nil {
-			return values, nil
-		}
-		if err := backup.Restore(); err != nil {
-			return nil, err
-		}
-		fresh, err := config.ParseFile(path)
-		if err != nil {
-			return nil, err
-		}
-		*cf = *fresh
-		return cf.Values(managedKeys()), nil
-	}
-
-	if err := startProgram(ui.Options{
-		ConfigPath:   path,
-		Values:       values,
-		ThemeOptions: themes,
-		FontOptions:  fonts,
-		OnSave:       onSave,
-		OnUndo:       onUndo,
-		DryRun:       f.dryRun,
-	}); err != nil {
+	opts.Themes, _ = ghostty.ListThemes()
+	opts.Fonts, _ = ghostty.ListFonts()
+	opts.Warning = warning
+	if err := startProgram(opts); err != nil {
 		fmt.Fprintln(stderr, "editor: "+err.Error())
 		return 1
 	}
 	return 0
-}
-
-func managedKeys() []string {
-	keys := []string{}
-	for _, s := range schema.All() {
-		keys = append(keys, s.Key)
-	}
-	return keys
 }
 
 func isTerminal() bool {

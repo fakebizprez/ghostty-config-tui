@@ -1,19 +1,35 @@
-// Package ui is the Bubble Tea fullscreen TUI: sidebar + preview + status bar.
+// Package ui is the Bubble Tea fullscreen editor: categories, settings,
+// a detail/editor pane with live preview, and a status bar.
 package ui
 
 import (
-	"fmt"
-	"sort"
-	"strconv"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 
+	"ghostty-config-tui/internal/config"
 	"ghostty-config-tui/internal/ghostty"
 	"ghostty-config-tui/internal/schema"
 )
+
+// Options wires the model to storage and picker data.
+type Options struct {
+	ConfigPath string
+	Values     map[string][]string // keys present in the config file
+	Themes     []string
+	Fonts      []string
+	// OnSave persists changed keys (nil slice = remove the key) and returns
+	// Ghostty's validation problems for the written file.
+	OnSave func(changed map[string][]string) (problems []string, err error)
+	// OnUndo restores the file as it was before the last save.
+	OnUndo  func() (map[string][]string, error)
+	DryRun  bool
+	Warning string // shown at startup, e.g. ghostty missing
+}
 
 // ThemeResolvedMsg delivers asynchronously loaded theme colors.
 type ThemeResolvedMsg struct {
@@ -22,752 +38,602 @@ type ThemeResolvedMsg struct {
 	OK     bool
 }
 
+// BlinkMsg flips the preview cursor blink phase.
+type BlinkMsg struct{}
+
+var resolveTheme = ghostty.ResolveThemeColors
+
 func resolveThemeCmd(name string) tea.Cmd {
 	return func() tea.Msg {
-		c, ok := ghostty.ResolveThemeColors(name)
+		c, ok := resolveTheme(name)
 		return ThemeResolvedMsg{Name: name, Colors: c, OK: ok}
 	}
 }
 
-// BlinkMsg flips the cursor blink phase on every tick.
-type BlinkMsg struct{}
-
 func tickCmd() tea.Cmd {
-	return tea.Tick(530*time.Millisecond, func(time.Time) tea.Msg {
-		return BlinkMsg{}
-	})
+	return tea.Tick(530*time.Millisecond, func(time.Time) tea.Msg { return BlinkMsg{} })
 }
 
-// Options wires the model to storage and picker data.
-type Options struct {
-	ConfigPath   string
-	Values       map[string]string
-	ThemeOptions []string
-	FontOptions  []string
-	OnSave       func(values map[string]string) error
-	OnUndo       func() (map[string]string, error)
-	DryRun       bool
-}
+type pane int
+
+const (
+	paneCats pane = iota
+	paneSettings
+)
+
+type dialog int
+
+const (
+	dlgNone dialog = iota
+	dlgHelp
+	dlgImport
+	dlgExport
+	dlgExportPath
+)
+
+// ModifiedCategory lists every key set in the file or staged.
+const ModifiedCategory = "★ Modified"
 
 // Model is the Tea Elm model.
 type Model struct {
-	keys           []schema.Setting
-	cursor         int
-	values         map[string]string
-	orig           map[string]string
-	configPath     string
-	themeOptions   []string
-	fontOptions    []string
-	onSave         func(map[string]string) error
-	onUndo         func() (map[string]string, error)
-	dryRun         bool
-	filter         string
-	filtering      bool
-	editing        bool
-	editKey        string
-	editBuf        string
-	pickIdx        int
-	themeColors    ghostty.ThemeColors
-	themeColorsOK  bool
-	themeColorsFor string
-	blinkPhase     bool
-	message        string
-	quitting       bool
-	width          int
-	height         int
+	sch         *schema.Schema
+	cats        []string
+	cat         int
+	row, rowOff int
+	pane        pane
+	search      string
+	searching   bool
+
+	vals, orig map[string][]string
+	opts       Options
+
+	themeColors map[string]ghostty.ThemeColors
+	themeAsked  map[string]bool
+
+	ed *editor
+
+	dlg    dialog
+	dlgBuf string
+	dlgOff int
+
+	msg         string
+	msgErr      bool
+	quitArmed   bool
+	showPreview bool
+	docOff      int
+	blinkOn     bool
+	width       int
+	height      int
 }
 
-// New builds a Model from Options. Every setting comes from internal/schema.
+// New builds a Model. Every setting comes from internal/schema.
 func New(opts Options) Model {
-	keys := schema.All()
-	values := map[string]string{}
-	for k, v := range opts.Values {
-		values[k] = v
+	sch := schema.Active()
+	cats := []string{ModifiedCategory}
+	for _, c := range schema.Categories {
+		if len(sch.InCategory(c)) > 0 {
+			cats = append(cats, c)
+		}
 	}
-	orig := map[string]string{}
-	for k, v := range values {
-		orig[k] = v
+	m := Model{
+		sch:         sch,
+		cats:        cats,
+		cat:         1,
+		pane:        paneSettings,
+		vals:        clone(opts.Values),
+		orig:        clone(opts.Values),
+		opts:        opts,
+		themeColors: map[string]ghostty.ThemeColors{},
+		themeAsked:  map[string]bool{},
+		showPreview: true,
+		blinkOn:     true,
+		width:       120,
+		height:      36,
+		msg:         opts.Warning,
 	}
-	// Fill defaults for display without marking dirty: orig tracks file state.
-	return Model{
-		keys:         keys,
-		values:       values,
-		orig:         orig,
-		configPath:   opts.ConfigPath,
-		themeOptions: opts.ThemeOptions,
-		fontOptions:  opts.FontOptions,
-		onSave:       opts.OnSave,
-		onUndo:       opts.OnUndo,
-		dryRun:       opts.DryRun,
-		blinkPhase:   true,
-		width:        80,
-		height:       24,
-	}
+	return m
 }
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	if m.values["theme"] != "" {
-		return tea.Batch(tickCmd(), resolveThemeCmd(m.values["theme"]))
+	cmds := []tea.Cmd{tickCmd()}
+	if t := m.scalar("theme"); t != "" {
+		cmds = append(cmds, resolveThemeCmd(t))
 	}
-	return tickCmd()
+	return tea.Batch(cmds...)
 }
 
-// visible returns the sidebar settings matching the current filter.
-func (m Model) visible() []schema.Setting {
-	if m.filter == "" {
-		return m.keys
-	}
-	return schema.Search(m.filter)
-}
-
-// Visible returns the sidebar settings matching the current filter.
-func (m Model) Visible() []schema.Setting { return m.visible() }
-
-// Filter returns the current sidebar search text.
-func (m Model) Filter() string { return m.filter }
-
-func (m *Model) clampCursor() {
-	if vis := m.visible(); len(vis) == 0 {
-		m.cursor = 0
-	} else if m.cursor >= len(vis) {
-		m.cursor = len(vis) - 1
-	}
-}
-
-// Cursor returns the sidebar cursor.
-func (m Model) Cursor() int { return m.cursor }
-
-// Values returns a copy of the current managed values.
-func (m Model) Values() map[string]string {
-	out := map[string]string{}
-	for k, v := range m.values {
-		out[k] = v
+func clone(in map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(in))
+	for k, v := range in {
+		if len(v) > 0 {
+			out[k] = slices.Clone(v)
+		}
 	}
 	return out
 }
 
-// Editing reports whether a detail edit is in progress.
-func (m Model) Editing() bool { return m.editing }
-
-// editSetting returns the schema entry for the row being edited.
-func (m Model) editSetting() schema.Setting {
-	s, _ := schema.ByKey(m.editKey)
-	return s
+// Rows returns the settings listed in the middle pane.
+func (m Model) Rows() []schema.Setting {
+	if m.searching || m.search != "" {
+		return m.sch.Search(m.search)
+	}
+	if m.cats[m.cat] == ModifiedCategory {
+		var out []schema.Setting
+		for _, s := range m.sch.Settings {
+			if len(m.vals[s.Key]) > 0 || m.dirtyKey(s.Key) {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return m.sch.InCategory(m.cats[m.cat])
 }
 
-// effectiveValue returns the current value or the schema default for display.
-func (m Model) effectiveValue(key string) string {
-	if v := m.values[key]; v != "" {
+// Current returns the highlighted setting.
+func (m Model) Current() (schema.Setting, bool) {
+	rows := m.Rows()
+	if m.row < 0 || m.row >= len(rows) {
+		return schema.Setting{}, false
+	}
+	return rows[m.row], true
+}
+
+// Values returns a copy of the staged values.
+func (m Model) Values() map[string][]string { return clone(m.vals) }
+
+// Editing reports whether an editor is open.
+func (m Model) Editing() bool { return m.ed != nil }
+
+// Message returns the status message.
+func (m Model) Message() string { return m.msg }
+
+func (m Model) scalar(key string) string {
+	v := m.vals[key]
+	if len(v) == 0 {
+		return ""
+	}
+	return v[len(v)-1]
+}
+
+// effective is the value Ghostty would use, including an open edit.
+func (m Model) effective(key string) string {
+	if m.ed != nil && m.ed.st.Key == key {
+		if v, ok := m.ed.live(); ok && v != "" {
+			return v
+		}
+	}
+	if v := m.scalar(key); v != "" {
 		return v
 	}
-	if s, ok := schema.ByKey(key); ok {
+	if s, ok := m.sch.ByKey(key); ok {
 		return s.Default
 	}
 	return ""
 }
 
-// startEdit opens edit mode for the row under the cursor.
-func (m *Model) startEdit() {
-	vis := m.visible()
-	if len(vis) == 0 {
-		return
-	}
-	key := vis[m.cursor].Key
-	m.editing = true
-	m.editKey = key
-	m.editBuf = m.effectiveValue(key)
-	m.pickIdx = 0
-	m.message = "editing " + key + " (enter commits, esc cancels)"
-}
+func (m Model) dirtyKey(key string) bool { return !slices.Equal(m.vals[key], m.orig[key]) }
 
-// picking reports whether the current edit shows an option picker.
-func (m Model) picking() bool {
-	if !m.editing {
-		return false
-	}
-	switch m.editKey {
-	case "theme":
-		return len(m.themeOptions) > 0
-	case "font-family":
-		return len(m.fontOptions) > 0
-	}
-	return false
-}
+// Dirty reports unsaved changes.
+func (m Model) Dirty() bool { return len(m.changed()) > 0 }
 
-func (m Model) pickerOptions() []string {
-	switch m.editKey {
-	case "theme":
-		return m.themeOptions
-	case "font-family":
-		return m.fontOptions
+func (m Model) changed() map[string][]string {
+	out := map[string][]string{}
+	for k := range m.vals {
+		if m.dirtyKey(k) {
+			out[k] = slices.Clone(m.vals[k])
+		}
 	}
-	return nil
-}
-
-// matches returns picker options containing the buffer text.
-func (m Model) matches() []string {
-	opts := m.pickerOptions()
-	if m.editBuf == "" {
-		return opts
-	}
-	q := strings.ToLower(m.editBuf)
-	var out []string
-	for _, o := range opts {
-		if strings.Contains(strings.ToLower(o), q) {
-			out = append(out, o)
+	for k := range m.orig {
+		if m.dirtyKey(k) {
+			out[k] = slices.Clone(m.vals[k])
 		}
 	}
 	return out
 }
 
-// pickEnter commits the highlighted match, or the custom buffer on no match.
-func (m *Model) pickEnter() tea.Cmd {
-	ms := m.matches()
-	if len(ms) == 0 {
-		return m.commitEdit()
+// set stages values for key. Scalars equal to the Ghostty default are
+// dropped so the written config stays minimal.
+func (m *Model) set(key string, values []string) {
+	st, _ := m.sch.ByKey(key)
+	if !st.Repeatable && len(values) == 1 && (values[0] == "" || values[0] == st.Default) {
+		values = nil
 	}
-	at := m.pickIdx
-	if at < 0 || at >= len(ms) {
-		at = 0
-	}
-	m.finishEdit(ms[at], "")
-	return m.themeCmd()
-}
-
-// themeCmd dispatches an async theme color reload after a theme commit.
-func (m *Model) themeCmd() tea.Cmd {
-	if m.editKey == "theme" && !m.editing {
-		return resolveThemeCmd(m.values["theme"])
-	}
-	return nil
-}
-
-// cycleEnum moves the edit buffer through the setting's options.
-func (m *Model) cycleEnum(forward bool) {
-	s := m.editSetting()
-	if len(s.Options) == 0 {
+	if len(values) == 0 {
+		delete(m.vals, key)
 		return
 	}
-	at := 0
-	for i, o := range s.Options {
-		if strings.EqualFold(o, m.editBuf) {
-			at = i
-			break
-		}
-	}
-	if forward {
-		at = (at + 1) % len(s.Options)
-	} else {
-		at = (at - 1 + len(s.Options)) % len(s.Options)
-	}
-	m.editBuf = s.Options[at]
+	m.vals[key] = slices.Clone(values)
 }
 
-// toggleBool flips a true/false edit buffer.
-func (m *Model) toggleBool() {
-	on, _ := schema.ParseBool(m.editBuf)
-	if on {
-		m.editBuf = "false"
-	} else {
-		m.editBuf = "true"
+func (m *Model) note(s string)    { m.msg, m.msgErr = s, false }
+func (m *Model) noteErr(s string) { m.msg, m.msgErr = s, true }
+
+func (m *Model) requestTheme(name string) tea.Cmd {
+	name = ghostty.ThemeForMode(name)
+	if name == "" || m.themeAsked[name] {
+		return nil
 	}
+	m.themeAsked[name] = true
+	return resolveThemeCmd(name)
 }
 
-// commitEdit validates the buffer and stores it, or keeps edit mode open.
-// A successful theme commit returns a command reloading theme colors.
-func (m *Model) commitEdit() tea.Cmd {
-	s := m.editSetting()
-	v := strings.TrimSpace(m.editBuf)
-	switch s.Type {
-	case "int":
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			m.message = "invalid " + s.Key + ": want a number (esc cancels)"
-			return nil
-		}
-		m.finishEdit(strconv.Itoa(schema.ClampFontSize(n)), "")
-	case "float":
-		f, ok := schema.ParseFloat(v)
-		if !ok {
-			m.message = "invalid " + s.Key + ": want a number (esc cancels)"
-			return nil
-		}
-		m.finishEdit(strconv.FormatFloat(schema.ClampOpacity(f), 'f', -1, 64), "")
-	case "color":
-		c := schema.NormalizeColor(v)
-		if !schema.ValidateColor(c) {
-			m.message = "invalid " + s.Key + ": want #RRGGBB (esc cancels)"
-			return nil
-		}
-		m.finishEdit(c, "")
-	case "enum":
-		matched := ""
-		for _, o := range s.Options {
-			if strings.EqualFold(o, v) {
-				matched = o
-			}
-		}
-		if matched == "" {
-			m.message = "invalid " + s.Key + ": want one of " + strings.Join(s.Options, "/") + " (esc cancels)"
-			return nil
-		}
-		m.finishEdit(matched, "")
-	case "bool":
-		on, ok := schema.ParseBool(v)
-		if !ok {
-			m.message = "invalid " + s.Key + ": want true/false (esc cancels)"
-			return nil
-		}
-		if on {
-			m.finishEdit("true", "")
-		} else {
-			m.finishEdit("false", "")
-		}
-	default:
-		m.finishEdit(v, s.Key)
+func (m *Model) clampRow() {
+	n := len(m.Rows())
+	if m.row >= n {
+		m.row = n - 1
 	}
-	return m.themeCmd()
-}
-
-// finishEdit stores a validated value, warning on unknown theme/font names.
-func (m *Model) finishEdit(stored, warnedKey string) {
-	var options []string
-	switch warnedKey {
-	case "theme":
-		options = m.themeOptions
-	case "font-family":
-		options = m.fontOptions
+	if m.row < 0 {
+		m.row = 0
 	}
-	m.SetValue(m.editKey, stored)
-	m.editing = false
-	m.message = m.editKey + " = " + stored
-	if len(options) > 0 && warnedKey != "" {
-		known := false
-		for _, o := range options {
-			if o == stored {
-				known = true
-			}
-		}
-		if !known {
-			m.message += " (warning: not in list — used as-is)"
-		}
-	}
-}
-
-// Dirty reports unsaved changes.
-func (m Model) Dirty() bool {
-	if len(m.values) != len(m.orig) {
-		return true
-	}
-	for k, v := range m.values {
-		if m.orig[k] != v {
-			return true
-		}
-	}
-	return false
-}
-
-// SetValue edits a managed key.
-func (m *Model) SetValue(key, value string) {
-	if m.values == nil {
-		m.values = map[string]string{}
-	}
-	m.values[key] = value
-}
-
-// StatusBar renders path, dirty state, save/undo notes, and key hints.
-func (m Model) StatusBar() string {
-	dirty := "clean"
-	if m.Dirty() {
-		dirty = "dirty ●"
-	}
-	dry := ""
-	if m.dryRun {
-		dry = " [dry-run]"
-	}
-	msg := ""
-	if m.message != "" {
-		msg = " — " + m.message
-	}
-	return fmt.Sprintf("%s | %s%s | s save u undo r/R reset / filter q quit%s", m.configPath, dirty, dry, msg)
+	m.docOff = 0
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case BlinkMsg:
-		m.blinkPhase = !m.blinkPhase
+		m.blinkOn = !m.blinkOn
 		return m, tickCmd()
 	case ThemeResolvedMsg:
-		m.themeColors = msg.Colors
-		m.themeColorsOK = msg.OK
-		m.themeColorsFor = msg.Name
+		if msg.OK {
+			m.themeColors[ghostty.ThemeForMode(msg.Name)] = msg.Colors
+		}
 		return m, nil
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
+		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case tea.PasteMsg:
+		return m.paste(msg.Content), nil
 	case tea.KeyPressMsg:
-		key := msg.String()
-		if m.editing && m.picking() {
-			switch key {
-			case "ctrl+c":
-				m.quitting = true
-				return m, tea.Quit
-			case "esc":
-				m.editing = false
-				m.editBuf = ""
-				m.message = ""
-				return m, nil
-			case "enter":
-				return m, m.pickEnter()
-			case "backspace":
-				if len(m.editBuf) > 0 {
-					m.editBuf = m.editBuf[:len(m.editBuf)-1]
-				}
-				m.pickIdx = 0
-				return m, nil
-			case "up":
-				if m.pickIdx > 0 {
-					m.pickIdx--
-				}
-				return m, nil
-			case "down":
-				if m.pickIdx < len(m.matches())-1 {
-					m.pickIdx++
-				}
-				return m, nil
-			case "tab", "right":
-				if ms := m.matches(); len(ms) > 0 {
-					m.pickIdx = (m.pickIdx + 1) % len(ms)
-				}
-				return m, nil
-			case "left":
-				if ms := m.matches(); len(ms) > 0 {
-					m.pickIdx = (m.pickIdx - 1 + len(ms)) % len(ms)
-				}
-				return m, nil
-			default:
-				t := msg.Text
-				if t == "" {
-					if len(key) != 1 {
-						return m, nil
-					}
-					t = key
-				}
-				if len(t) != 1 {
-					return m, nil
-				}
-				m.editBuf += t
-				m.pickIdx = 0
-				return m, nil
-			}
+		// Some terminals and input bursts deliver Enter as a bare line feed.
+		if s := msg.String(); s == "ctrl+j" || s == "ctrl+m" {
+			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
 		}
-		if m.editing {
-			switch key {
-			case "ctrl+c":
-				m.quitting = true
-				return m, tea.Quit
-			case "esc":
-				m.editing = false
-				m.editBuf = ""
-				m.message = ""
-				return m, nil
-			case "enter":
-				return m, m.commitEdit()
-			case "backspace":
-				if len(m.editBuf) > 0 {
-					m.editBuf = m.editBuf[:len(m.editBuf)-1]
-				}
-				return m, nil
-			case "tab", "right":
-				if typ := m.editSetting().Type; typ == "enum" {
-					m.cycleEnum(true)
-				} else if typ == "bool" {
-					m.toggleBool()
-				}
-				return m, nil
-			case "left":
-				if typ := m.editSetting().Type; typ == "enum" {
-					m.cycleEnum(false)
-				} else if typ == "bool" {
-					m.toggleBool()
-				}
-				return m, nil
-			case "up", "down", " ", "space":
-				if m.editSetting().Type == "bool" {
-					m.toggleBool()
-				}
-				return m, nil
-			default:
-				t := msg.Text
-				if t == "" {
-					if len(key) != 1 {
-						return m, nil
-					}
-					t = key
-				}
-				if len(t) != 1 {
-					return m, nil
-				}
-				m.editBuf += t
-				return m, nil
-			}
-		}
-		if m.filtering {
-			switch key {
-			case "esc":
-				m.filtering = false
-				m.filter = ""
-				m.clampCursor()
-				return m, nil
-			case "enter":
-				m.filtering = false
-				m.clampCursor()
-				return m, nil
-			case "backspace":
-				if len(m.filter) > 0 {
-					m.filter = m.filter[:len(m.filter)-1]
-				}
-				m.clampCursor()
-				return m, nil
-			default:
-				t := msg.Text
-				if t == "" {
-					if len(key) != 1 {
-						return m, nil
-					}
-					t = key
-				}
-				m.filter += t
-				m.clampCursor()
-				return m, nil
-			}
-		}
-		switch key {
-		case "q", "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
-		case "/":
-			m.filtering = true
-			return m, nil
-		case "down", "j":
-			if m.cursor < len(m.visible())-1 {
-				m.cursor++
-			}
-			return m, nil
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			return m, nil
-		case "s":
-			if m.onSave == nil {
-				m.message = "no save handler"
-				return m, nil
-			}
-			cp := map[string]string{}
-			for k, v := range m.values {
-				cp[k] = v
-			}
-			if err := m.onSave(cp); err != nil {
-				m.message = "save error: " + err.Error()
-				return m, nil
-			}
-			m.orig = cp
-			if m.dryRun {
-				m.message = "dry-run: would write file"
-			} else {
-				m.message = "saved — reload Ghostty with ctrl+shift+r"
-			}
-			return m, nil
-		case "u":
-			if m.onUndo == nil {
-				m.message = "no undo handler"
-				return m, nil
-			}
-			restored, err := m.onUndo()
-			if err != nil {
-				m.message = "undo error: " + err.Error()
-				return m, nil
-			}
-			m.values = restored
-			m.orig = restored
-			m.message = "undo restored"
-			return m, nil
-		case "r":
-			if vis := m.visible(); len(vis) > 0 {
-				k := vis[m.cursor].Key
-				if v, ok := m.orig[k]; ok {
-					m.values[k] = v
-				} else {
-					delete(m.values, k)
-				}
-				m.message = "reset " + k
-			}
-			return m, nil
-		case "R":
-			m.values = map[string]string{}
-			for k, v := range m.orig {
-				m.values[k] = v
-			}
-			m.message = "reset all"
-			return m, nil
-		case "enter":
-			m.startEdit()
-			return m, nil
+		return m.key(msg)
+	}
+	return m, nil
+}
+
+func (m Model) paste(s string) Model {
+	switch {
+	case m.dlg == dlgImport || m.dlg == dlgExportPath:
+		m.dlgBuf += s
+	case m.ed != nil:
+		m.ed.paste(s)
+	}
+	return m
+}
+
+func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := msg.String()
+	if k == "ctrl+c" {
+		return m, tea.Quit
+	}
+	if m.dlg != dlgNone {
+		return m.dialogKey(msg)
+	}
+	if m.ed != nil {
+		cmd := m.editKey(msg)
+		return m, cmd
+	}
+	if m.searching {
+		switch k {
 		case "esc":
-			m.message = ""
-			return m, nil
+			m.searching, m.search = false, ""
+		case "enter", "down":
+			m.searching = false
+		case "backspace":
+			m.search = trimLast(m.search)
 		default:
+			if t := msg.Text; t != "" {
+				m.search += t
+			}
+		}
+		m.clampRow()
+		return m, nil
+	}
+	if k != "q" {
+		m.quitArmed = false
+	}
+	rows := m.Rows()
+	switch k {
+	case "q":
+		if m.Dirty() && !m.quitArmed {
+			m.quitArmed = true
+			m.noteErr("unsaved changes: q again to discard, s to save")
 			return m, nil
+		}
+		return m, tea.Quit
+	case "?":
+		m.dlg = dlgHelp
+	case "/":
+		m.searching, m.search, m.row = true, "", 0
+	case "esc":
+		m.search, m.msg = "", ""
+		m.clampRow()
+	case "tab", "left", "h", "right", "l":
+		if k == "left" || k == "h" {
+			m.pane = paneCats
+		} else if k == "right" || k == "l" {
+			m.pane = paneSettings
+		} else {
+			m.pane = 1 - m.pane
+		}
+	case "down", "j":
+		m.move(1)
+	case "up", "k":
+		m.move(-1)
+	case "pgdown", "ctrl+d":
+		m.docOff += 5
+	case "pgup", "ctrl+u":
+		m.docOff = max(0, m.docOff-5)
+	case "g", "home":
+		m.row = 0
+	case "G", "end":
+		m.row = max(0, len(rows)-1)
+	case "p":
+		m.showPreview = !m.showPreview
+	case "enter", "e", "space", " ":
+		if m.pane == paneCats {
+			m.pane = paneSettings
+			return m, nil
+		}
+		return m, m.startEdit(k == "space" || k == " ")
+	case "s":
+		return m.save(), nil
+	case "u":
+		return m.undo()
+	case "r":
+		if st, ok := m.Current(); ok {
+			if v := m.orig[st.Key]; len(v) > 0 {
+				m.vals[st.Key] = slices.Clone(v)
+			} else {
+				delete(m.vals, st.Key)
+			}
+			m.note("reverted " + st.Key + " to the file value")
+		}
+	case "R":
+		m.vals = clone(m.orig)
+		m.note("reverted all unsaved changes")
+	case "d", "delete":
+		if st, ok := m.Current(); ok {
+			m.set(st.Key, nil)
+			m.note(st.Key + " reset to Ghostty default (" + orNone(st.Default) + ")")
+		}
+	case "i":
+		m.dlg, m.dlgBuf = dlgImport, ""
+	case "x":
+		m.dlg, m.dlgOff = dlgExport, 0
+	}
+	return m, nil
+}
+
+func (m *Model) move(d int) {
+	if m.pane == paneCats {
+		m.cat = (m.cat + d + len(m.cats)) % len(m.cats)
+		m.row, m.rowOff, m.search = 0, 0, ""
+		m.docOff = 0
+		return
+	}
+	n := len(m.Rows())
+	if n == 0 {
+		return
+	}
+	m.row = min(max(m.row+d, 0), n-1)
+	m.docOff = 0
+}
+
+func (m *Model) startEdit(space bool) tea.Cmd {
+	st, ok := m.Current()
+	if !ok {
+		return nil
+	}
+	if st.Kind == schema.Bool && !st.Repeatable {
+		on, _ := schema.ParseBool(m.effective(st.Key))
+		m.set(st.Key, []string{boolStr(!on)})
+		m.note(st.Key + " = " + boolStr(!on))
+		return nil
+	}
+	if space {
+		return nil
+	}
+	m.ed = m.newEditor(st)
+	m.note("editing " + st.Key)
+	if st.Kind == schema.Theme {
+		return m.requestTheme(m.ed.highlighted())
+	}
+	return nil
+}
+
+func (m Model) save() Model {
+	changed := m.changed()
+	if len(changed) == 0 {
+		m.note("nothing to save")
+		return m
+	}
+	if m.opts.OnSave == nil {
+		m.noteErr("no save handler")
+		return m
+	}
+	problems, err := m.opts.OnSave(changed)
+	if err != nil {
+		m.noteErr("save failed: " + err.Error())
+		return m
+	}
+	m.orig = clone(m.vals)
+	switch {
+	case m.opts.DryRun:
+		m.note("dry-run: " + plural(len(changed), "change") + " not written")
+	case len(problems) > 0:
+		m.noteErr("saved, but Ghostty reports: " + strings.Join(problems, "; "))
+	default:
+		m.note("saved " + plural(len(changed), "change") + " — reload Ghostty with ctrl+shift+r")
+	}
+	return m
+}
+
+func (m Model) undo() (Model, tea.Cmd) {
+	if m.opts.OnUndo == nil {
+		m.noteErr("no undo handler")
+		return m, nil
+	}
+	restored, err := m.opts.OnUndo()
+	if err != nil {
+		m.noteErr("undo failed: " + err.Error())
+		return m, nil
+	}
+	m.vals, m.orig = clone(restored), clone(restored)
+	m.note("restored the file from before the last save")
+	return m, m.requestTheme(m.scalar("theme"))
+}
+
+func (m Model) dialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	k := msg.String()
+	switch m.dlg {
+	case dlgHelp:
+		m.dlg = dlgNone
+	case dlgExport:
+		switch k {
+		case "esc", "q", "x":
+			m.dlg = dlgNone
+		case "c", "y":
+			m.dlg = dlgNone
+			m.note("copied minimal config to the clipboard")
+			return m, tea.SetClipboard(m.ExportText())
+		case "w":
+			m.dlg, m.dlgBuf = dlgExportPath, "~/ghostty-config-export.ghostty"
+		case "down", "j":
+			m.dlgOff++
+		case "up", "k":
+			m.dlgOff = max(0, m.dlgOff-1)
+		}
+	case dlgExportPath, dlgImport:
+		switch k {
+		case "esc":
+			m.dlg = dlgNone
+		case "enter":
+			if m.dlg == dlgImport {
+				return m.doImport(), m.requestTheme(m.scalar("theme"))
+			}
+			path := expandHome(strings.TrimSpace(m.dlgBuf))
+			if err := config.AtomicWrite(path, m.ExportText(), 0); err != nil {
+				m.noteErr("export failed: " + err.Error())
+			} else {
+				m.note("exported to " + path)
+			}
+			m.dlg = dlgNone
+		case "backspace":
+			m.dlgBuf = trimLast(m.dlgBuf)
+		case "ctrl+u":
+			m.dlgBuf = ""
+		default:
+			m.dlgBuf += msg.Text
 		}
 	}
 	return m, nil
 }
 
-// View implements tea.Model with the alternate screen buffer.
-func (m Model) View() tea.View {
-	var sb strings.Builder
-	title := lipgloss.NewStyle().Bold(true).Render("ghostty-config-tui")
-	fmt.Fprintf(&sb, "%s\n\n", title)
-	// Sidebar.
-	names := make([]string, 0, len(m.keys))
-	_ = names
-	_ = sort.StringSlice{}
-	if m.filtering {
-		fmt.Fprintf(&sb, "/%s\n", m.filter)
-	} else if m.filter != "" {
-		fmt.Fprintf(&sb, "filter: %s (esc clears)\n", m.filter)
+// doImport merges a pasted config or a file path into the staged values.
+func (m Model) doImport() Model {
+	m.dlg = dlgNone
+	src := m.dlgBuf
+	if t := strings.TrimSpace(src); t != "" && !strings.ContainsAny(t, "\n=") {
+		b, err := os.ReadFile(expandHome(t))
+		if err != nil {
+			m.noteErr("import failed: " + err.Error())
+			return m
+		}
+		src = string(b)
 	}
-	for i, s := range m.visible() {
-		cursor := "  "
-		if i == m.cursor {
-			cursor = "> "
-		}
-		dot := " "
-		if m.orig[s.Key] != m.values[s.Key] {
-			dot = "●"
-		}
-		val := m.values[s.Key]
-		if val == "" {
-			val = s.Default
-		}
-		if m.editing && s.Key == m.editKey {
-			fmt.Fprintf(&sb, "%s%s %s = %s\n", cursor, dot, s.Key, m.editBuf+"▌")
-			if m.picking() {
-				ms := m.matches()
-				shown := ms
-				if len(shown) > 8 {
-					shown = shown[:8]
-				}
-				for i, o := range shown {
-					mark := "  "
-					if i == m.pickIdx {
-						mark = "> "
-					}
-					fmt.Fprintf(&sb, "    %s%s\n", mark, o)
-				}
-				if len(ms) == 0 {
-					fmt.Fprintf(&sb, "    (no match — enter uses custom value)\n")
-				}
-			}
+	f := config.Parse(src)
+	n, unknown := 0, 0
+	for _, key := range f.Keys() {
+		if _, ok := m.sch.ByKey(key); !ok {
+			unknown++
 			continue
 		}
-		fmt.Fprintf(&sb, "%s%s %s = %s\n", cursor, dot, s.Key, val)
+		m.set(key, f.GetAll(key))
+		n++
 	}
-	sb.WriteString("\n")
-	sb.WriteString(previewBlock(m))
-	sb.WriteString("\n")
-	sb.WriteString(lipgloss.NewStyle().Faint(true).Render(m.StatusBar()))
-	v := tea.NewView(sb.String())
-	v.AltScreen = true
-	return v
+	if n == 0 {
+		m.noteErr("import: no Ghostty settings found")
+		return m
+	}
+	msg := "imported " + plural(n, "setting") + " — review, then s to save"
+	if unknown > 0 {
+		msg += " (" + plural(unknown, "unknown key") + " skipped)"
+	}
+	m.note(msg)
+	return m
 }
 
-func cursorGlyph(style string) string {
-	switch style {
-	case "bar":
-		return "▏"
-	case "underline":
-		return "▁"
-	default:
-		return "█"
+// ExportText renders the staged values as a minimal config grouped by
+// category: only settings that differ from Ghostty's defaults.
+func (m Model) ExportText() string {
+	var sb strings.Builder
+	for _, cat := range schema.Categories {
+		first := true
+		for _, st := range m.sch.InCategory(cat) {
+			vals := m.vals[st.Key]
+			if len(vals) == 0 {
+				continue
+			}
+			if first {
+				if sb.Len() > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString("# " + cat + "\n")
+				first = false
+			}
+			for _, v := range vals {
+				sb.WriteString(st.Key + " = " + v + "\n")
+			}
+		}
 	}
+	return sb.String()
 }
 
-func blinkEnabled(m Model) bool {
-	v := firstNonEmpty(m.values["cursor-style-blink"], schema.Defaults()["cursor-style-blink"])
-	on, _ := schema.ParseBool(v)
-	return on
+func expandHome(p string) string {
+	if strings.HasPrefix(p, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, p[2:])
+		}
+	}
+	return p
 }
 
-// resolvePreviewColors applies explicit values over loaded theme colors
-// over Ghostty defaults for the live preview.
-func resolvePreviewColors(m Model) (bg, fg, cursor string, pal [16]string) {
-	bg = m.values["background"]
-	fg = m.values["foreground"]
-	pal = ghostty.DefaultPalette
-	cursor = ""
-	if theme := m.values["theme"]; theme != "" && m.themeColorsOK && m.themeColorsFor == theme {
-		if bg == "" {
-			bg = m.themeColors.Background
-		}
-		if fg == "" {
-			fg = m.themeColors.Foreground
-		}
-		if schema.ValidateColor(m.themeColors.Cursor) {
-			cursor = m.themeColors.Cursor
-		}
-		pal = m.themeColors.Palette
+func trimLast(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return s
 	}
-	if !schema.ValidateColor(bg) {
-		bg = schema.Defaults()["background"]
-	}
-	if !schema.ValidateColor(fg) {
-		fg = schema.Defaults()["foreground"]
-	}
-	if !schema.ValidateColor(cursor) {
-		cursor = fg
-	}
-	return bg, fg, cursor, pal
+	return string(r[:len(r)-1])
 }
 
-func previewBlock(m Model) string {
-	bg, fg, cursorColor, palette := resolvePreviewColors(m)
-	box := lipgloss.NewStyle().
-		Background(lipgloss.Color(bg)).
-		Foreground(lipgloss.Color(fg)).
-		Render("  AaBbCc 0123  ")
-	var pal strings.Builder
-	for _, c := range palette {
-		pal.WriteString(lipgloss.NewStyle().Background(lipgloss.Color(c)).Render("  "))
+func boolStr(b bool) string {
+	if b {
+		return "true"
 	}
-	glyph := cursorGlyph(firstNonEmpty(m.values["cursor-style"], "block"))
-	blink := "off"
-	if blinkEnabled(m) {
-		blink = "on"
-		if !m.blinkPhase {
-			glyph = " "
-		}
-	}
-	cursorOut := lipgloss.NewStyle().Foreground(lipgloss.Color(cursorColor)).Render(glyph)
-	return "preview: " + box + "\n" + "palette: " + pal.String() + "\n" + "cursor: " + cursorOut + " (blink " + blink + ")"
+	return "false"
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
+func orNone(s string) string {
+	if s == "" {
+		return "unset"
 	}
-	return ""
+	return s
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return itoa(n) + " " + word + "s"
 }
 
 // Run starts the Tea program.
 func Run(opts Options) error {
-	p := tea.NewProgram(New(opts))
-	_, err := p.Run()
+	_, err := tea.NewProgram(New(opts)).Run()
 	return err
 }

@@ -132,3 +132,33 @@ func TestUndoRestoreAndMissing(t *testing.T) {
 		t.Fatal("missing-file undo should remove file")
 	}
 }
+
+func TestSetAllReplacesInPlaceAndPreservesOthers(t *testing.T) {
+	src := "# head\nfont-family = A\nfont-size=12   # odd spacing kept\nfont-family = B\n\nkeybind = x=y\n"
+	f := Parse(src)
+	f.SetAll("font-family", []string{"C", "D", "E"})
+	want := "# head\nfont-family = C\nfont-family = D\nfont-family = E\nfont-size=12   # odd spacing kept\n\nkeybind = x=y\n"
+	if got := f.Marshal(); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if got := f.GetAll("font-family"); strings.Join(got, ",") != "C,D,E" {
+		t.Fatalf("GetAll = %v", got)
+	}
+}
+
+func TestSetAllRemoveAndAppend(t *testing.T) {
+	f := Parse("a = 1\nb = 2\na = 3")
+	f.SetAll("a", nil)
+	f.SetAll("c", []string{"9"})
+	if got := f.Marshal(); got != "b = 2\nc = 9\n" {
+		t.Fatalf("got %q", got)
+	}
+	empty := Parse("")
+	empty.SetAll("theme", []string{"Nord"})
+	if got := empty.Marshal(); got != "theme = Nord\n" {
+		t.Fatalf("new file = %q", got)
+	}
+	if keys := Parse("x = 1\ny = 2\nx = 3\n# x = 4\n").Keys(); strings.Join(keys, ",") != "x,y" {
+		t.Fatalf("Keys = %v", keys)
+	}
+}

@@ -37,6 +37,91 @@ func TestParseFlagsEach(t *testing.T) {
 	}
 }
 
+func TestMain(m *testing.M) {
+	// Keep tests on the bundled schema regardless of the installed Ghostty.
+	loadSchema = func() string { return "" }
+	os.Exit(m.Run())
+}
+
+func TestParseFlagsConfig(t *testing.T) {
+	for _, args := range [][]string{{"--config", "/x/c"}, {"--config=/x/c"}} {
+		f, _, err := parseFlags(args)
+		if err != nil || f.config != "/x/c" {
+			t.Fatalf("%v parsed as %+v err=%v", args, f, err)
+		}
+	}
+	if _, _, err := parseFlags([]string{"--config"}); err == nil {
+		t.Fatal("--config without a path should error")
+	}
+}
+
+func TestSaveRepeatableAndRemove(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	orig := "keybind = ctrl+a=new_tab\n# note\nfont-size = 12\nkeybind = ctrl+b=close_surface\nmystery = 1\n"
+	if err := os.WriteFile(p, []byte(orig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := newSession(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opts.Values["keybind"]; len(got) != 2 {
+		t.Fatalf("loaded keybinds = %v", got)
+	}
+	if _, ok := opts.Values["mystery"]; ok {
+		t.Fatal("unknown keys must not be loaded as managed values")
+	}
+	_, err = opts.OnSave(map[string][]string{
+		"keybind":   {"ctrl+a=new_tab", "ctrl+shift+t=new_window"},
+		"font-size": nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	want := "keybind = ctrl+a=new_tab\nkeybind = ctrl+shift+t=new_window\n# note\nmystery = 1\n"
+	if string(b) != want {
+		t.Fatalf("saved:\n%s\nwant:\n%s", b, want)
+	}
+	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("permissions changed to %v", fi.Mode().Perm())
+	}
+	if _, err := opts.OnUndo(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != orig {
+		t.Fatalf("undo restored:\n%s", b)
+	}
+	if _, err := opts.OnUndo(); err == nil {
+		t.Fatal("second undo with no new save should error")
+	}
+}
+
+func TestDryRunSaveDoesNotWrite(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte("font-size = 12\n"), 0o644)
+	opts, _ := newSession(p, true)
+	if _, err := opts.OnSave(map[string][]string{"font-size": {"20"}}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "font-size = 12\n" {
+		t.Fatalf("dry-run wrote: %s", b)
+	}
+}
+
+func TestRunExport(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte("cursor-style = bar\nfont-size = 15\nmystery = 1\n"), 0o644)
+	var out, errBuf bytes.Buffer
+	if code := run(&out, &errBuf, []string{"--export", "--config", p}, false); code != 0 {
+		t.Fatalf("export exit %d: %s", code, errBuf.String())
+	}
+	want := "# Fonts\nfont-size = 15\n\n# Cursor\ncursor-style = bar\n"
+	if out.String() != want {
+		t.Fatalf("export = %q, want %q", out.String(), want)
+	}
+}
+
 func TestParseFlagsUnknown(t *testing.T) {
 	if _, _, err := parseFlags([]string{"--bogus"}); err == nil {
 		t.Fatal("unknown flag should error")
@@ -58,7 +143,7 @@ func TestPrintConfigSchemaOrder(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("print = %q, want 3 managed lines", buf.String())
 	}
-	// Schema order: theme before font-family/font-size; font-size before foreground.
+	// Ghostty's own option order: font-size, then theme, then foreground.
 	themeIdx, sizeIdx, fgIdx := -1, -1, -1
 	for i, l := range lines {
 		switch {
@@ -70,7 +155,7 @@ func TestPrintConfigSchemaOrder(t *testing.T) {
 			fgIdx = i
 		}
 	}
-	if themeIdx != 0 || sizeIdx != 1 || fgIdx != 2 {
+	if sizeIdx != 0 || themeIdx != 1 || fgIdx != 2 {
 		t.Fatalf("schema order wrong: %q", buf.String())
 	}
 }
@@ -87,7 +172,7 @@ func TestRunVersion(t *testing.T) {
 	if code := run(&out, &errBuf, []string{"--version"}, true); code != 0 {
 		t.Fatalf("version exit = %d", code)
 	}
-	if !strings.Contains(out.String(), "0.1.0") {
+	if !strings.Contains(out.String(), "0.2.0") {
 		t.Fatalf("version output = %q", out.String())
 	}
 }
@@ -130,7 +215,7 @@ func TestRunSaveUndoRoundTrip(t *testing.T) {
 	if code := run(&out, &errBuf, []string{}, true); code != 0 {
 		t.Fatalf("run exit = %d, stderr=%q", code, errBuf.String())
 	}
-	if err := got.OnSave(map[string]string{"font-size": "14"}); err != nil {
+	if _, err := got.OnSave(map[string][]string{"font-size": {"14"}}); err != nil {
 		t.Fatal(err)
 	}
 	saved, _ := os.ReadFile(cfg)
@@ -141,7 +226,7 @@ func TestRunSaveUndoRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restored["font-size"] != "12" {
+	if len(restored["font-size"]) != 1 || restored["font-size"][0] != "12" {
 		t.Fatalf("undo values = %v, want font-size 12", restored)
 	}
 	after, _ := os.ReadFile(cfg)

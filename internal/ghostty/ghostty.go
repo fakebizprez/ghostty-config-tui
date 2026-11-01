@@ -160,3 +160,47 @@ func ListFonts() ([]string, Status) {
 	}
 	return ParseFontFamilies(string(out)), st
 }
+
+func runGhostty(args ...string) (string, bool) {
+	if _, err := lookPath("ghostty"); err != nil {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+	out, err := runCommand(ctx, "ghostty", args...)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+// DefaultDocs returns `ghostty +show-config --default --docs`, the source of
+// the setting schema for the installed version.
+func DefaultDocs() (string, bool) { return runGhostty("+show-config", "--default", "--docs") }
+
+// Actions returns `ghostty +list-actions` for the keybind builder.
+func Actions() (string, bool) { return runGhostty("+list-actions") }
+
+// Validate runs `ghostty +validate-config` against a file and returns its
+// diagnostics. ok is false when Ghostty is unavailable.
+func Validate(path string) (problems []string, ok bool) {
+	if _, err := lookPath("ghostty"); err != nil {
+		return nil, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+	out, err := validateCommand(ctx, path)
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l = strings.TrimPrefix(strings.TrimSpace(l), path+":"); l != "" {
+			problems = append(problems, l)
+		}
+	}
+	if err != nil && len(problems) == 0 {
+		problems = []string{err.Error()}
+	}
+	return problems, true
+}
+
+var validateCommand = func(ctx context.Context, path string) ([]byte, error) {
+	return exec.CommandContext(ctx, "ghostty", "+validate-config", "--config-file="+path).CombinedOutput()
+}

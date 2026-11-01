@@ -110,6 +110,59 @@ func (f *File) Set(key, value string) {
 	f.Lines = append(f.Lines, Line{Kind: "kv", Key: key, Value: value, Raw: key + " = " + value})
 }
 
+// GetAll returns every value for a repeatable key, in file order.
+func (f *File) GetAll(key string) []string {
+	var out []string
+	for _, l := range f.Lines {
+		if l.Kind == "kv" && l.Key == key {
+			out = append(out, l.Value)
+		}
+	}
+	return out
+}
+
+// SetAll replaces every line for key with values, placed where the first
+// existing line was (or appended). Empty values removes the key entirely.
+// Lines for other keys are never touched.
+func (f *File) SetAll(key string, values []string) {
+	at := -1
+	kept := make([]Line, 0, len(f.Lines)+len(values))
+	for _, l := range f.Lines {
+		if l.Kind == "kv" && l.Key == key {
+			if at < 0 {
+				at = len(kept)
+			}
+			continue
+		}
+		kept = append(kept, l)
+	}
+	if at < 0 {
+		at = len(kept)
+	}
+	repl := make([]Line, 0, len(values))
+	for _, v := range values {
+		repl = append(repl, Line{Kind: "kv", Key: key, Value: v, Raw: key + " = " + v})
+	}
+	out := append(append(append([]Line{}, kept[:at]...), repl...), kept[at:]...)
+	f.Lines = out
+	if len(f.Lines) > 0 && !f.TrailingNL && at == len(kept) && len(values) > 0 {
+		f.TrailingNL = true
+	}
+}
+
+// Keys returns each distinct key present, in first-seen order.
+func (f *File) Keys() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range f.Lines {
+		if l.Kind == "kv" && !seen[l.Key] {
+			seen[l.Key] = true
+			out = append(out, l.Key)
+		}
+	}
+	return out
+}
+
 // Marshal renders the file byte-for-byte except for managed edits.
 func (f *File) Marshal() string {
 	if len(f.Lines) == 0 {

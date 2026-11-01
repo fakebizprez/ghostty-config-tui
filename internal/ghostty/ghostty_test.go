@@ -1,6 +1,7 @@
 package ghostty
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -84,5 +85,33 @@ func TestMissingBinaryDegraded(t *testing.T) {
 	fonts, st := ListFonts()
 	if len(fonts) != 0 || !st.Degraded {
 		t.Fatalf("missing binary should degrade, got %v %+v", fonts, st)
+	}
+}
+
+func TestThemeForMode(t *testing.T) {
+	for in, want := range map[string]string{
+		"Dracula": "Dracula", "light:Day,dark:Night": "Night", "dark:Night,light:Day": "Night",
+		"light:Day": "Day", " Nord ": "Nord",
+	} {
+		if got := ThemeForMode(in); got != want {
+			t.Errorf("ThemeForMode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestValidateStripsPathAndDegrades(t *testing.T) {
+	oldLook, oldVal := lookPath, validateCommand
+	defer func() { lookPath, validateCommand = oldLook, oldVal }()
+	lookPath = func(string) (string, error) { return "/bin/ghostty", nil }
+	validateCommand = func(_ context.Context, path string) ([]byte, error) {
+		return []byte(path + ":2:bogus-key: unknown field\n"), errors.New("exit 1")
+	}
+	got, ok := Validate("/c/config")
+	if !ok || len(got) != 1 || got[0] != "2:bogus-key: unknown field" {
+		t.Fatalf("Validate = %v ok=%v", got, ok)
+	}
+	lookPath = func(string) (string, error) { return "", errors.New("missing") }
+	if _, ok := Validate("/c/config"); ok {
+		t.Fatal("missing ghostty should report ok=false")
 	}
 }

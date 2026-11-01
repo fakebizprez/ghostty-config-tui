@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"ghostty-config-tui/internal/schema"
 )
@@ -15,6 +16,9 @@ type ThemeColors struct {
 	Background string
 	Foreground string
 	Cursor     string
+	CursorText string
+	SelBG      string
+	SelFG      string
 	Palette    [16]string
 }
 
@@ -28,17 +32,17 @@ var DefaultPalette = [16]string{
 
 // WithDefaults fills unset colors from Ghostty defaults and the ANSI palette.
 func (c ThemeColors) WithDefaults() ThemeColors {
-	if !schema.ValidateColor(c.Background) {
+	if !schema.IsHex(c.Background) {
 		c.Background = schema.Defaults()["background"]
 	}
-	if !schema.ValidateColor(c.Foreground) {
+	if !schema.IsHex(c.Foreground) {
 		c.Foreground = schema.Defaults()["foreground"]
 	}
-	if !schema.ValidateColor(c.Cursor) {
+	if !schema.IsHex(c.Cursor) {
 		c.Cursor = c.Foreground
 	}
 	for i := range c.Palette {
-		if !schema.ValidateColor(c.Palette[i]) {
+		if !schema.IsHex(c.Palette[i]) {
 			c.Palette[i] = DefaultPalette[i]
 		}
 	}
@@ -65,16 +69,24 @@ func ParseThemeColors(text string) ThemeColors {
 			val = strings.TrimSpace(val[:i])
 		}
 		switch key {
-		case "background", "foreground", "cursor-color":
-			if !schema.ValidateColor(val) {
+		case "background", "foreground", "cursor-color", "cursor-text", "selection-background", "selection-foreground":
+			val = schema.NormalizeColor(val)
+			if !schema.IsHex(val) {
 				continue
 			}
-			if key == "background" {
+			switch key {
+			case "background":
 				c.Background = val
-			} else if key == "foreground" {
+			case "foreground":
 				c.Foreground = val
-			} else {
+			case "cursor-color":
 				c.Cursor = val
+			case "cursor-text":
+				c.CursorText = val
+			case "selection-background":
+				c.SelBG = val
+			default:
+				c.SelFG = val
 			}
 		case "palette":
 			slot, color, ok := strings.Cut(val, "=")
@@ -85,8 +97,8 @@ func ParseThemeColors(text string) ThemeColors {
 			if err != nil || n < 0 || n > 15 {
 				continue
 			}
-			color = strings.TrimSpace(color)
-			if !schema.ValidateColor(color) {
+			color = schema.NormalizeColor(color)
+			if !schema.IsHex(color) {
 				continue
 			}
 			c.Palette[n] = color
@@ -133,8 +145,27 @@ func ParseThemePaths(out string) []ThemeFile {
 	return files
 }
 
-// themePaths lists installed theme files via the Ghostty binary.
+var (
+	themeMu    sync.Mutex
+	themeCache []ThemeFile
+)
+
+// themePaths lists installed theme files via the Ghostty binary, cached
+// after the first successful call so theme browsing stays fast.
 func themePaths() ([]ThemeFile, error) {
+	themeMu.Lock()
+	defer themeMu.Unlock()
+	if themeCache != nil {
+		return themeCache, nil
+	}
+	files, err := listThemePaths()
+	if err == nil {
+		themeCache = files
+	}
+	return files, err
+}
+
+func listThemePaths() ([]ThemeFile, error) {
 	if _, err := lookPath("ghostty"); err != nil {
 		return nil, err
 	}
@@ -147,10 +178,30 @@ func themePaths() ([]ThemeFile, error) {
 	return ParseThemePaths(string(out)), nil
 }
 
+// ThemeForMode picks one theme from `light:A,dark:B` values (dark wins,
+// matching the preview's dark-first look); plain names pass through.
+func ThemeForMode(v string) string {
+	if !strings.Contains(v, ":") {
+		return strings.TrimSpace(v)
+	}
+	pick := ""
+	for _, part := range strings.Split(v, ",") {
+		mode, name, ok := strings.Cut(strings.TrimSpace(part), ":")
+		if !ok {
+			continue
+		}
+		if mode == "dark" || pick == "" {
+			pick = strings.TrimSpace(name)
+		}
+	}
+	return pick
+}
+
 // ResolveThemeColors loads a theme's colors by name (case-sensitive).
 // ok is false when Ghostty is missing, the theme is unknown, or its file
 // cannot be read. Returned colors always carry defaults.
 func ResolveThemeColors(name string) (ThemeColors, bool) {
+	name = ThemeForMode(name)
 	files, err := themePaths()
 	if err != nil {
 		return ThemeColors{}.WithDefaults(), false
