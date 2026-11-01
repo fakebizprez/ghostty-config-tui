@@ -9,6 +9,7 @@ import (
 
 	"ghostty-config-tui/internal/config"
 	"ghostty-config-tui/internal/ghostty"
+	"ghostty-config-tui/internal/graphics"
 	"ghostty-config-tui/internal/schema"
 	"ghostty-config-tui/internal/ui"
 )
@@ -243,6 +244,7 @@ func run(stdout, stderr io.Writer, args []string, isTTY bool) int {
 	opts.Themes, _ = ghostty.ListThemes()
 	opts.Fonts, _ = ghostty.ListFonts()
 	opts.Warning = warning
+	opts.Graphics = graphics.Supported()
 	if err := startProgram(opts); err != nil {
 		fmt.Fprintln(stderr, "editor: "+err.Error())
 		return 1

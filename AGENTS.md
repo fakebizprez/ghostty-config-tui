@@ -74,12 +74,12 @@ Keys Ghostty does not know are preserved untouched.
 3. Live preview: mock terminal using theme + explicit colors, palette, selection, cursor style and blink; the theme picker previews the highlighted theme
 4. Status bar: dirty count, messages, Ghostty validation results, key hints
 5. Dialogs: help, import (paste, path, or share link), export (clipboard via OSC 52, file, or a ghostty.zerebos.com share link), font playground (`ghostty +show-face` against staged fonts)
-6. App icon preview on `macos-icon*` settings; type-into preview prompt (`t`)
+6. App icon preview on `macos-icon*` settings (real icon images via Kitty graphics placeholders in Ghostty/kitty, block art elsewhere); type-into preview prompt (`t`)
 
 ### Non-goals
 
 - Plugin system, network sync
-- Rendering other fonts (a terminal cannot); the font playground reports Ghostty's face resolution instead
+- Ligature shaping in the font playground image (x/image draws glyphs without shaping); the `+show-face` table covers fallback
 - Native macOS preference pane (this stays a terminal app)
 
 ### Out-of-scope languages
@@ -126,6 +126,7 @@ gofmt -l .
 - Every setting comes from `internal/schema`, not hardcoded in UI code.
 - Handle `ghostty` binary missing: pickers fall back to manual input with a warning.
 - Errors are shown in-app in the status bar, never panic to a broken alternate screen.
+- Images go through `internal/graphics` (Kitty graphics protocol with Unicode placeholders, so they are plain cells to the renderer); disabled under tmux/screen with a text fallback.
 
 ## Tests (required for changes)
 

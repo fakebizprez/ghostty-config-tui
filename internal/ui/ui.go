@@ -26,9 +26,10 @@ type Options struct {
 	// Ghostty's validation problems for the written file.
 	OnSave func(changed map[string][]string) (problems []string, err error)
 	// OnUndo restores the file as it was before the last save.
-	OnUndo  func() (map[string][]string, error)
-	DryRun  bool
-	Warning string // shown at startup, e.g. ghostty missing
+	OnUndo   func() (map[string][]string, error)
+	DryRun   bool
+	Warning  string // shown at startup, e.g. ghostty missing
+	Graphics bool   // terminal speaks the Kitty graphics protocol
 }
 
 // ThemeResolvedMsg delivers asynchronously loaded theme colors.
@@ -97,6 +98,12 @@ type Model struct {
 	dlgBuf string
 	dlgOff int
 
+	iconSent  string // signature of the icon last uploaded
+	fontImg   bool   // playground font image uploaded
+	fontCols  int
+	fontRows  int
+	fontFile  string
+	fontErr   string
 	faces     []string // font playground results
 	facesOK   bool
 	facesDone bool
@@ -295,6 +302,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FacesMsg:
 		m.faces, m.facesOK, m.facesDone = msg.Lines, msg.OK, true
 		return m, nil
+	case FontImageMsg:
+		return m.fontImage(msg)
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -305,7 +314,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s := msg.String(); (s == "ctrl+j" || s == "ctrl+m") && !m.recording() {
 			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
 		}
-		return m.key(msg)
+		res, cmd := m.key(msg)
+		next := res.(Model)
+		if c := next.syncIcon(); c != nil {
+			return next, tea.Batch(cmd, c)
+		}
+		return next, cmd
 	}
 	return m, nil
 }
@@ -461,6 +475,10 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dlg, m.dlgOff = dlgExport, 0
 	case "f":
 		m.dlg, m.faces, m.facesDone = dlgFonts, nil, false
+		m.fontImg, m.fontErr = false, ""
+		if m.opts.Graphics {
+			return m, tea.Batch(m.facesCmd(), m.renderFontCmd())
+		}
 		return m, m.facesCmd()
 	}
 	return m, nil

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/ansi/kitty"
 
 	"ghostty-config-tui/internal/ghostty"
 )
@@ -583,5 +585,74 @@ func TestBlockCursorDrawsEmptyCell(t *testing.T) {
 	m = typeText(m, "ls")
 	if out := ansi.Strip(m.Render()); strings.Contains(out, "❯ lsa") {
 		t.Fatal("block cursor must not draw a letter after the typed text")
+	}
+}
+
+func rawSeqs(cmd tea.Cmd) string {
+	if cmd == nil {
+		return ""
+	}
+	switch msg := cmd().(type) {
+	case tea.RawMsg:
+		s, _ := msg.Msg.(string)
+		return s
+	case tea.BatchMsg:
+		var out string
+		for _, c := range msg {
+			out += rawSeqs(c)
+		}
+		return out
+	}
+	return ""
+}
+
+func TestIconRealImageWhenGraphicsSupported(t *testing.T) {
+	m, _ := newModel(map[string][]string{"macos-icon": {"blueprint"}})
+	m.opts.Graphics = true
+	m = goTo(t, m, "macos-icon")
+	m.iconSent = "" // force the next key to upload
+	mm, cmd := m.Update(key("p"))
+	m = mm.(Model)
+	if seq := rawSeqs(cmd); !strings.Contains(seq, "\x1b_G") || !strings.Contains(seq, "i=101") {
+		t.Fatalf("expected a Kitty transmit for the icon, got %q", seq[:min(len(seq), 60)])
+	}
+	if !strings.ContainsRune(m.Render(), kitty.Placeholder) {
+		t.Fatal("icon should render as image placeholders")
+	}
+	// Same icon again: no re-upload.
+	mm, cmd = m.Update(key("p"))
+	mm, cmd = mm.(Model).Update(key("p"))
+	if strings.Contains(rawSeqs(cmd), "\x1b_G") {
+		t.Fatal("unchanged icon must not be re-transmitted")
+	}
+}
+
+func TestFontPlaygroundRealRendering(t *testing.T) {
+	oldFace, oldRender := showFace, renderFont
+	defer func() { showFace, renderFont = oldFace, oldRender }()
+	showFace = func(string, []string) ([]string, bool) { return nil, true }
+	var gotFamily string
+	renderFont = func(family string, lines []string, bg, fg string) (image.Image, string, error) {
+		gotFamily = family
+		return image.NewRGBA(image.Rect(0, 0, 400, 200)), "/fonts/Iosevka.ttf", nil
+	}
+	m, _ := newModel(map[string][]string{"font-family": {"Iosevka"}})
+	m.opts.Graphics = true
+	mm, cmd := m.Update(key("f"))
+	m = mm.(Model)
+	for _, msg := range cmd().(tea.BatchMsg) {
+		var c tea.Cmd
+		mm, c = m.Update(msg())
+		m = mm.(Model)
+		if s := rawSeqs(c); s != "" && !strings.Contains(s, "i=102") {
+			t.Fatalf("font image should transmit as id 102: %q", s[:40])
+		}
+	}
+	if gotFamily != "Iosevka" {
+		t.Fatalf("rendered family %q", gotFamily)
+	}
+	out := m.Render()
+	if !strings.ContainsRune(out, kitty.Placeholder) || !strings.Contains(ansi.Strip(out), "Iosevka.ttf") {
+		t.Fatalf("playground should show the rendered font image:\n%s", ansi.Strip(out))
 	}
 }
