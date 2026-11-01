@@ -64,8 +64,8 @@ func (m *Model) scalarEditor(st schema.Setting, cur string) *editor {
 		}
 		if i := slices.Index(e.options, want); i >= 0 {
 			e.idx = i
-		} else {
-			e.buf = cur
+		} else if cur != "" {
+			e.buf, e.idx = cur, -1 // keep the custom value, not a fuzzy match
 		}
 	case schema.Flags:
 		e.flags = map[string]bool{}
@@ -132,7 +132,7 @@ func (e *editor) matches() []string {
 	return matches(e.options, e.buf)
 }
 
-// highlighted is the picker row under the cursor, else the typed text.
+// highlighted is the picker row under the cursor; idx -1 is the typed text.
 func (e *editor) highlighted() string {
 	ms := e.matches()
 	if e.idx >= 0 && e.idx < len(ms) {
@@ -330,29 +330,38 @@ func (m *Model) scalarKey(e *editor, msg tea.KeyPressMsg) int {
 		e.buf, e.idx = "", 0
 		return edContinue
 	case "backspace":
-		e.buf, e.idx = trimLast(e.buf), 0
+		e.buf = trimLast(e.buf)
+		e.idx = e.firstRow()
 		return edContinue
 	}
 	switch {
 	case e.picker():
 		n := len(e.matches())
+		lo := 0
+		if e.buf != "" {
+			lo = -1 // row -1: use the typed text as-is
+		}
 		switch k {
 		case "down", "tab", "ctrl+n":
-			if n > 0 {
-				e.idx = (e.idx + 1) % n
+			if e.idx < n-1 {
+				e.idx++
+			} else {
+				e.idx = lo
 			}
 		case "up", "shift+tab", "ctrl+p":
-			if n > 0 {
-				e.idx = (e.idx - 1 + n) % n
+			if e.idx > lo {
+				e.idx--
+			} else {
+				e.idx = max(n-1, lo)
 			}
 		case "pgdown":
 			e.idx = min(e.idx+10, max(n-1, 0))
 		case "pgup":
-			e.idx = max(e.idx-10, 0)
+			e.idx = max(e.idx-10, lo)
 		default:
 			if msg.Text != "" {
 				e.buf += msg.Text
-				e.idx = 0
+				e.idx = e.firstRow()
 			}
 		}
 	case e.st.Kind == schema.Flags:
@@ -409,6 +418,15 @@ func (m *Model) scalarKey(e *editor, msg tea.KeyPressMsg) int {
 		e.buf += msg.Text
 	}
 	return edContinue
+}
+
+// firstRow highlights the best match after typing, or the typed text when
+// nothing matches.
+func (e *editor) firstRow() int {
+	if len(e.matches()) == 0 {
+		return -1
+	}
+	return 0
 }
 
 func (e *editor) nudge(d float64) string {

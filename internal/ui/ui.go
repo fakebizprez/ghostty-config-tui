@@ -98,7 +98,7 @@ type Model struct {
 
 	msg         string
 	msgErr      bool
-	quitArmed   bool
+	armed       string // "q" or "u" awaiting confirmation
 	showPreview bool
 	docOff      int
 	blinkOn     bool
@@ -232,12 +232,15 @@ func (m Model) changed() map[string][]string {
 	return out
 }
 
-// set stages values for key. Scalars equal to the Ghostty default are
-// dropped so the written config stays minimal.
+// set stages values for key. A scalar set back to Ghostty's default is
+// dropped only when the file never had the key, so the config stays minimal
+// while explicit pins (e.g. overriding a theme's color) are kept.
 func (m *Model) set(key string, values []string) {
 	st, _ := m.sch.ByKey(key)
-	if !st.Repeatable && len(values) == 1 && (values[0] == "" || values[0] == st.Default) {
-		values = nil
+	if !st.Repeatable && len(values) == 1 {
+		if values[0] == "" || (values[0] == st.Default && len(m.orig[key]) == 0) {
+			values = nil
+		}
 	}
 	if len(values) == 0 {
 		delete(m.vals, key)
@@ -287,12 +290,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.paste(msg.Content), nil
 	case tea.KeyPressMsg:
 		// Some terminals and input bursts deliver Enter as a bare line feed.
-		if s := msg.String(); s == "ctrl+j" || s == "ctrl+m" {
+		if s := msg.String(); (s == "ctrl+j" || s == "ctrl+m") && !m.recording() {
 			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
 		}
 		return m.key(msg)
 	}
 	return m, nil
+}
+
+// recording reports whether the keybind builder is capturing a raw key.
+func (m Model) recording() bool {
+	if m.ed == nil {
+		return false
+	}
+	return m.ed.kbRecord > 0 || (m.ed.sub != nil && m.ed.sub.kbRecord > 0)
 }
 
 func (m Model) paste(s string) Model {
@@ -333,14 +344,14 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.clampRow()
 		return m, nil
 	}
-	if k != "q" {
-		m.quitArmed = false
+	if k != m.armed {
+		m.armed = ""
 	}
 	rows := m.Rows()
 	switch k {
 	case "q":
-		if m.Dirty() && !m.quitArmed {
-			m.quitArmed = true
+		if m.Dirty() && m.armed != "q" {
+			m.armed = "q"
 			m.noteErr("unsaved changes: q again to discard, s to save")
 			return m, nil
 		}
@@ -383,6 +394,12 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		return m.save(), nil
 	case "u":
+		if m.Dirty() && m.armed != "u" {
+			m.armed = "u"
+			m.noteErr("undo discards unsaved edits: u again to undo the last save")
+			return m, nil
+		}
+		m.armed = ""
 		return m.undo()
 	case "r":
 		if st, ok := m.Current(); ok {

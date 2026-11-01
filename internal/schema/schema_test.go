@@ -187,3 +187,25 @@ func TestFlagState(t *testing.T) {
 		t.Fatal("true/false should set every flag")
 	}
 }
+
+func TestFontVariationIsRepeatable(t *testing.T) {
+	for _, k := range []string{"font-variation", "font-variation-bold", "font-variation-italic", "font-variation-bold-italic", "env", "config-file"} {
+		if s, _ := ByKey(k); !s.Repeatable {
+			t.Errorf("%s should be repeatable (editing it as a scalar deletes lines)", k)
+		}
+	}
+}
+
+func TestColorNamesAndCellValues(t *testing.T) {
+	ct, _ := ByKey("cursor-text")
+	sb, _ := ByKey("selection-background")
+	pal, _ := ByKey("palette")
+	for _, c := range []struct {
+		s  Setting
+		in string
+	}{{ct, "cell-foreground"}, {sb, "cell-background"}, {ct, "gray50"}, {sb, "SlateBlue1"}, {pal, "4=gray50"}} {
+		if _, _, err := Validate(c.s, c.in); err != nil {
+			t.Errorf("Validate(%s, %q) = %v", c.s.Key, c.in, err)
+		}
+	}
+}

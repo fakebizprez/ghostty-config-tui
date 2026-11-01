@@ -139,19 +139,22 @@ func newSession(path string, dryRun bool) (ui.Options, error) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		next := &config.File{Lines: append([]config.Line(nil), cf.Lines...), TrailingNL: cf.TrailingNL}
 		for _, k := range keys {
-			cf.SetAll(k, changed[k])
+			next.SetAll(k, changed[k])
 		}
 		if dryRun {
+			*cf = *next
 			return nil, nil
 		}
 		snap, err := config.Snapshot(path)
 		if err != nil {
 			return nil, err
 		}
-		if err := config.AtomicWrite(path, cf.Marshal(), 0); err != nil {
-			return nil, err
+		if err := config.AtomicWrite(path, next.Marshal(), 0); err != nil {
+			return nil, err // cf untouched: a later save cannot resurrect this change
 		}
+		*cf = *next
 		backup = snap
 		problems, _ := ghostty.Validate(path)
 		return problems, nil

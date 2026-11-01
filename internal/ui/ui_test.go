@@ -78,8 +78,8 @@ func TestNumberSliderClampsToRange(t *testing.T) {
 	m, _ := newModel(map[string][]string{"background-opacity": {"0.9"}})
 	m = goTo(t, m, "background-opacity")
 	m = press(m, "enter", "right", "right", "right", "enter")
-	if got := m.Values()["background-opacity"]; got != nil {
-		t.Fatalf("0.9 + 3 steps clamps to 1 (the default) and drops the key, got %v", got)
+	if got := m.Values()["background-opacity"]; len(got) != 1 || got[0] != "1" {
+		t.Fatalf("0.9 + 3 steps clamps to 1; the file had the key so it stays explicit, got %v", got)
 	}
 	m = press(m, "enter", "left", "left", "enter")
 	if got := m.Values()["background-opacity"][0]; got != "0.9" {
@@ -364,5 +364,59 @@ func TestLineFeedActsAsEnter(t *testing.T) {
 	mm, _ := m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
 	if !mm.(Model).Editing() {
 		t.Fatal("ctrl+j (line feed) should open the editor like enter")
+	}
+}
+
+func TestExplicitDefaultKeptWhenFileHadIt(t *testing.T) {
+	m, _ := newModel(map[string][]string{"theme": {"Dracula"}, "background": {"#282c34"}})
+	m = goTo(t, m, "background")
+	m = press(m, "enter", "enter")
+	if m.Dirty() || m.Values()["background"][0] != "#282c34" {
+		t.Fatalf("re-applying a pinned default must not delete it: %v", m.Values()["background"])
+	}
+}
+
+func TestPickerKeepsCustomValue(t *testing.T) {
+	m, _ := newModel(map[string][]string{"window-title-font-family": {"Iosev"}, "background-blur": {"2"}})
+	m = goTo(t, m, "window-title-font-family")
+	m = press(m, "enter", "enter")
+	m = goTo(t, m, "background-blur")
+	m = press(m, "enter", "enter")
+	if m.Dirty() {
+		t.Fatalf("open+enter rewrote custom values: %v", m.changed())
+	}
+	// Typed text that is a substring of an option is reachable via the typed row.
+	m = goTo(t, m, "window-title-font-family")
+	m = press(m, "enter", "ctrl+u")
+	m = typeText(m, "Ios")
+	m = press(m, "up", "enter")
+	if got := m.Values()["window-title-font-family"][0]; got != "Ios" {
+		t.Fatalf("typed custom value = %q", got)
+	}
+}
+
+func TestUndoWithUnsavedEditsAsksFirst(t *testing.T) {
+	m, _ := newModel(nil)
+	called := 0
+	m.opts.OnUndo = func() (map[string][]string, error) { called++; return map[string][]string{}, nil }
+	m = goTo(t, m, "maximize")
+	m = press(m, "space", "u")
+	if called != 0 || !m.Dirty() {
+		t.Fatal("first u with unsaved edits must not undo")
+	}
+	m = press(m, "u")
+	if called != 1 {
+		t.Fatal("second u should undo")
+	}
+}
+
+func TestRecorderCapturesCtrlJ(t *testing.T) {
+	m, _ := newModel(nil)
+	m = goTo(t, m, "keybind")
+	m = press(m, "enter", "a", "ctrl+r")
+	mm, _ := m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
+	m = mm.(Model)
+	if got := m.ed.sub.kbTrig; got != "ctrl+j" {
+		t.Fatalf("recorded %q, want ctrl+j", got)
 	}
 }

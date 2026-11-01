@@ -234,3 +234,23 @@ func TestRunSaveUndoRoundTrip(t *testing.T) {
 		t.Fatalf("undo should restore exact bytes, got:\n%s", after)
 	}
 }
+
+func TestFailedSaveDoesNotLeakIntoNextSave(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config")
+	os.WriteFile(p, []byte("font-size = 12\n"), 0o644)
+	opts, _ := newSession(p, false)
+	// Make the write fail by replacing the target with a non-empty directory.
+	os.Remove(p)
+	os.MkdirAll(filepath.Join(p, "x"), 0o755)
+	if _, err := opts.OnSave(map[string][]string{"font-size": {"20"}}); err == nil {
+		t.Fatal("expected the save to fail")
+	}
+	os.RemoveAll(p)
+	if _, err := opts.OnSave(map[string][]string{"theme": {"Nord"}}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "font-size = 12\ntheme = Nord\n" {
+		t.Fatalf("reverted change leaked into the next save:\n%s", b)
+	}
+}

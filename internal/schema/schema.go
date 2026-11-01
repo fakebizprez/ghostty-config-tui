@@ -220,7 +220,7 @@ func finish(st *Setting) {
 	if st.Defaults[0] == "" && len(st.Defaults) == 1 {
 		st.Defaults = nil
 	}
-	if strings.Contains(st.Docs, "repeated") || strings.Contains(st.Docs, "multiple times") {
+	{ // Curated: the docs word this inconsistently ("repeated", "repeatable", ...).
 		switch st.Key {
 		case "font-family", "font-family-bold", "font-family-italic", "font-family-bold-italic",
 			"font-feature", "font-variation", "font-variation-bold", "font-variation-italic",

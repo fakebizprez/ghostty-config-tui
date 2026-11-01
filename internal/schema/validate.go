@@ -85,7 +85,7 @@ func Validate(st Setting, v string) (string, string, error) {
 		return FormatNumber(f), "", nil
 	case Color:
 		c := NormalizeColor(v)
-		if hexRe.MatchString(c) || contains(st.Options, v) {
+		if hexRe.MatchString(c) || contains(st.Options, v) || v == "cell-foreground" || v == "cell-background" {
 			return c, "", nil
 		}
 		if isWord(v) {
@@ -138,11 +138,12 @@ func isWord(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == ' ') {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' || r == '-') {
 			return false
 		}
 	}
-	return true
+	r := s[0]
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
 }
 
 // FlagState reports a flag's effective on/off in a flags value, falling back

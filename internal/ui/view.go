@@ -379,6 +379,13 @@ func (m Model) scalarLines(e *editor, w int) []string {
 	case e.picker():
 		out = append(out, input("filter ", e.buf, true))
 		ms := e.matches()
+		if e.buf != "" {
+			row := "  use \"" + e.buf + "\" as typed"
+			if e.idx < 0 {
+				row = sel.Render("> use \"" + e.buf + "\" as typed")
+			}
+			out = append(out, row)
+		}
 		start, end := window(len(ms), e.idx, 8)
 		for i := start; i < end; i++ {
 			if i == e.idx {
@@ -389,7 +396,7 @@ func (m Model) scalarLines(e *editor, w int) []string {
 		}
 		switch {
 		case len(ms) == 0 && e.buf != "":
-			out = append(out, warnSty.Render("no match — enter uses \""+e.buf+"\" as-is"))
+			out = append(out, warnSty.Render("no match — enter uses the typed value"))
 		case len(ms) > 0:
 			out = append(out, faint.Render(fmt.Sprintf("%d/%d · ↑↓ move · type to filter · enter pick", e.idx+1, len(ms))))
 		}
