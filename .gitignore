@@ -21,5 +21,14 @@ coverage.*
 *.swp
 *~
 
-# Local agent leftovers
+# Local secrets
+.env
+.env.*
+
+# Local agent state (.claude/skills/ stays tracked)
 .muse/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
+.claude/worktrees/
+.claude/checkpoints/
