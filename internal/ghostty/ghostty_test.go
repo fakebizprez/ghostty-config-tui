@@ -3,6 +3,8 @@ package ghostty
 import (
 	"context"
 	"errors"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +115,41 @@ func TestValidateStripsPathAndDegrades(t *testing.T) {
 	lookPath = func(string) (string, error) { return "", errors.New("missing") }
 	if _, ok := Validate("/c/config"); ok {
 		t.Fatal("missing ghostty should report ok=false")
+	}
+}
+
+func TestShowFaceIgnoresSavedConfig(t *testing.T) {
+	oldLook, oldRun := lookPath, runCommand
+	defer func() { lookPath, runCommand = oldLook, oldRun }()
+	lookPath = func(string) (string, error) { return "/bin/ghostty", nil }
+	var got []string
+	runCommand = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		got = args
+		return []byte("U+61 « a » found in face “Menlo”.\n"), nil
+	}
+	lines, err := ShowFace("a", []string{"font-family=Menlo"})
+	if err != nil || len(lines) != 1 {
+		t.Fatalf("lines=%v err=%v", lines, err)
+	}
+	want := "+show-face --config-default-files=false --string=a --font-family=Menlo"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("args = %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
+func TestShowFaceErrors(t *testing.T) {
+	oldLook, oldRun := lookPath, runCommand
+	defer func() { lookPath, runCommand = oldLook, oldRun }()
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	if _, err := ShowFace("a", nil); !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("missing binary: err = %v", err)
+	}
+	lookPath = func(string) (string, error) { return "/bin/ghostty", nil }
+	runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, &exec.ExitError{Stderr: []byte("error: unknown action +show-face\n")}
+	}
+	_, err := ShowFace("a", nil)
+	if err == nil || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "unknown action") {
+		t.Fatalf("failing command: err = %v", err)
 	}
 }

@@ -3,7 +3,10 @@
 package ghostty
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -205,22 +208,35 @@ var validateCommand = func(ctx context.Context, path string) ([]byte, error) {
 	return exec.CommandContext(ctx, "ghostty", "+validate-config", "--config-file="+path).CombinedOutput()
 }
 
-// ShowFace runs `ghostty +show-face --string=sample` with the given
-// font-family overrides and returns one line per codepoint.
-func ShowFace(sample string, families []string) ([]string, bool) {
-	args := []string{"+show-face", "--string=" + sample}
-	for _, f := range families {
-		args = append(args, "--font-family="+f)
+// ErrNotInstalled means the ghostty binary is not on PATH.
+var ErrNotInstalled = errors.New("ghostty is not on PATH")
+
+// ShowFace runs `ghostty +show-face --string=sample` against only the given
+// settings ("key=value", as config lines), not the user's saved config files,
+// and returns one line per codepoint.
+func ShowFace(sample string, settings []string) ([]string, error) {
+	if _, err := lookPath("ghostty"); err != nil {
+		return nil, ErrNotInstalled
 	}
-	out, ok := runGhostty(args...)
-	if !ok {
-		return nil, false
+	args := []string{"+show-face", "--config-default-files=false", "--string=" + sample}
+	for _, kv := range settings {
+		args = append(args, "--"+kv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+	out, err := runCommand(ctx, "ghostty", args...)
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
+			return nil, fmt.Errorf("ghostty +show-face: %s", bytes.TrimSpace(ee.Stderr))
+		}
+		return nil, fmt.Errorf("ghostty +show-face: %w", err)
 	}
 	var lines []string
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if l = strings.TrimSpace(l); l != "" {
 			lines = append(lines, l)
 		}
 	}
-	return lines, true
+	return lines, nil
 }

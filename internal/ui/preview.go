@@ -1,11 +1,13 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
 	lipgloss "charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/image/colornames"
 
 	"ghostty-config-tui/internal/ghostty"
 	"ghostty-config-tui/internal/schema"
@@ -27,9 +29,17 @@ func (m Model) explicit(key string) string {
 	return m.scalar(key)
 }
 
+// hexOr resolves a Ghostty color (hex, X11 name, or the first stop of a
+// gradient) to #rrggbb, or returns fallback.
 func hexOr(v, fallback string) string {
-	if c := schema.NormalizeColor(v); schema.IsHex(c) {
+	first, _, _ := strings.Cut(v, ",")
+	c := schema.NormalizeColor(first)
+	if schema.IsHex(c) {
 		return c[:7]
+	}
+	// shortcut: CSS names, which match X11 except gray, green, maroon and purple; embed rgb.txt if those matter.
+	if rgb, ok := colornames.Map[strings.ReplaceAll(c, " ", "")]; ok {
+		return fmt.Sprintf("#%02x%02x%02x", rgb.R, rgb.G, rgb.B)
 	}
 	return fallback
 }

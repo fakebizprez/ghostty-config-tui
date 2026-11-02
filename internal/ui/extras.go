@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -30,16 +31,39 @@ type FontImageMsg struct {
 	Img  image.Image
 	File string
 	Err  string
+	Gen  int // the playground opening it answers; older ones are dropped
 }
 
 // renderFont draws sample lines with the installed font for family.
 var renderFont = func(family string, lines []string, bg, fg string) (image.Image, string, error) {
-	path, ok := fontrender.Find(family)
+	f, ok := fontrender.Find(family)
 	if !ok {
 		return nil, "", fmt.Errorf("no font file for %q in the system font folders (Ghostty's bundled default has no file)", family)
 	}
-	img, err := fontrender.Render(path, lines, 30, opaque(bg), opaque(fg))
-	return img, path, err
+	img, err := fontrender.Render(f, lines, 30, opaque(bg), opaque(fg))
+	return img, f.Path, err
+}
+
+// unquote strips the double quotes Ghostty removes when it reads a value
+// from the file (it keeps them on the command line).
+func unquote(v string) string {
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		return v[1 : len(v)-1]
+	}
+	return v
+}
+
+// primaryFamily is the first font-family after the last reset (an empty value).
+func primaryFamily(vals []string) string {
+	family := ""
+	for _, v := range vals {
+		if u := unquote(v); u == "" {
+			family = ""
+		} else if family == "" {
+			family = u
+		}
+	}
+	return family
 }
 
 // opaque decodes a hex color, black when it is not hex.
@@ -54,22 +78,25 @@ func (m Model) renderFontCmd() tea.Cmd {
 	if !m.opts.Graphics {
 		return nil
 	}
-	family := firstOf(m.vals["font-family"])
+	family := primaryFamily(m.vals["font-family"])
 	if family == "" {
 		family = "JetBrains Mono"
 	}
-	pc := m.Colors()
+	pc, gen := m.Colors(), m.fontGen
 	return func() tea.Msg {
 		img, file, err := renderFont(family, playgroundSamples, pc.BG, pc.FG)
 		if err != nil {
-			return FontImageMsg{Err: err.Error()}
+			return FontImageMsg{Err: err.Error(), Gen: gen}
 		}
-		return FontImageMsg{Img: img, File: file}
+		return FontImageMsg{Img: img, File: file, Gen: gen}
 	}
 }
 
 // fontImage sizes the rendered sample to the dialog and uploads it.
 func (m Model) fontImage(msg FontImageMsg) (Model, tea.Cmd) {
+	if msg.Gen != m.fontGen {
+		return m, nil
+	}
 	if msg.Img == nil {
 		m.fontErr = msg.Err
 		return m, nil
@@ -78,6 +105,10 @@ func (m Model) fontImage(msg FontImageMsg) (Model, tea.Cmd) {
 	cols := min(max(m.width-8, 20), 100)
 	// Terminal cells are about twice as tall as wide.
 	rows := max(1, (cols*b.Dy()+b.Dx())/(2*b.Dx()))
+	// Leave the dialog room for the header above and the face list heading below.
+	if maxRows := max(3, m.dialogHeight()-7); rows > maxRows {
+		rows, cols = maxRows, max(1, maxRows*2*b.Dx()/b.Dy())
+	}
 	m.fontCols, m.fontRows, m.fontFile = cols, rows, msg.File
 	return m, tea.Raw(graphics.Transmit(fontID, msg.Img, cols, rows))
 }
@@ -123,18 +154,32 @@ var showFace = ghostty.ShowFace
 // FacesMsg delivers `ghostty +show-face` results for the playground.
 type FacesMsg struct {
 	Lines []string
-	OK    bool
+	Err   error
+	Gen   int // the playground opening it answers; older ones are dropped
+}
+
+// fontSettings are the staged font-* values as unquoted key=value pairs.
+func (m Model) fontSettings() []string {
+	var out []string
+	for _, st := range m.sch.Settings {
+		if strings.HasPrefix(st.Key, "font-") {
+			for _, v := range m.vals[st.Key] {
+				out = append(out, st.Key+"="+unquote(v))
+			}
+		}
+	}
+	return out
 }
 
 func (m Model) facesCmd() tea.Cmd {
-	families := append([]string(nil), m.vals["font-family"]...)
+	settings, gen := m.fontSettings(), m.fontGen
 	return func() tea.Msg {
-		lines, ok := showFace(strings.Join(playgroundSamples, ""), families)
-		return FacesMsg{Lines: lines, OK: ok}
+		lines, err := showFace(strings.Join(playgroundSamples, ""), settings)
+		return FacesMsg{Lines: lines, Err: err, Gen: gen}
 	}
 }
 
-func (m Model) playgroundLines(w int) []string {
+func (m Model) playgroundLines(w, h int) []string {
 	fam := strings.Join(m.vals["font-family"], ", ")
 	if fam == "" {
 		fam = "Ghostty default"
@@ -158,10 +203,12 @@ func (m Model) playgroundLines(w int) []string {
 	}
 	out = append(out, "", bold.Render("Which face Ghostty picks for each character:"))
 	switch {
-	case m.faces == nil && !m.facesDone:
+	case !m.facesDone:
 		out = append(out, faint.Render("  asking ghostty +show-face…"))
-	case !m.facesOK:
+	case errors.Is(m.facesErr, ghostty.ErrNotInstalled):
 		out = append(out, warnSty.Render("  ghostty not available — install it to see font fallback"))
+	case m.facesErr != nil:
+		out = append(out, warnSty.Render("  "+m.facesErr.Error()))
 	default:
 		for _, l := range groupFaces(m.faces) {
 			st := lipgloss.NewStyle()
@@ -171,8 +218,9 @@ func (m Model) playgroundLines(w int) []string {
 			out = append(out, "  "+st.Render(l))
 		}
 	}
-	out = append(out, "", faint.Render("esc close · edit font-family, then f again to re-check"))
-	return out
+	out = append(out, "", faint.Render("↑↓ scroll · esc close · edit font-family, then f again to re-check"))
+	off := min(m.dlgOff, max(0, len(out)-h))
+	return out[off:]
 }
 
 // IconPalette is the macOS app icon approximation.

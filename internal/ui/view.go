@@ -40,7 +40,7 @@ func (m Model) View() tea.View {
 // Render draws the full screen as a string (used by View and tests).
 func (m Model) Render() string {
 	w, h := max(m.width, 60), max(m.height, 16)
-	bodyH := h - 3
+	bodyH := h - 3 // keep in sync with dialogHeight
 	header := m.header(w)
 	var body string
 	if m.dlg != dlgNone {
@@ -631,6 +631,9 @@ func (m Model) statusLines(w int) string {
 	return fit(line1, w) + "\n" + fit(faint.Render(" "+hints), w)
 }
 
+// dialogHeight is the number of content lines a dialog box shows.
+func (m Model) dialogHeight() int { return max(m.height, 16) - 3 - 2 }
+
 func (m Model) dialogTitle() string {
 	switch m.dlg {
 	case dlgHelp:
@@ -650,7 +653,7 @@ func (m Model) dialogLines(w, h int) []string {
 	case dlgHelp:
 		return helpLines
 	case dlgFonts:
-		return m.playgroundLines(w)
+		return m.playgroundLines(w, h)
 	case dlgImport:
 		lines := strings.Split(m.dlgBuf, "\n")
 		out := []string{

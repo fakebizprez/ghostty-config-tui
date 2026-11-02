@@ -103,8 +103,9 @@ type Model struct {
 	fontRows  int
 	fontFile  string // set once the playground font image is uploaded
 	fontErr   string
+	fontGen   int      // bumped on each playground opening
 	faces     []string // font playground results
-	facesOK   bool
+	facesErr  error
 	facesDone bool
 
 	typing  bool     // keys go to the preview's prompt
@@ -307,7 +308,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case FacesMsg:
-		m.faces, m.facesOK, m.facesDone = msg.Lines, msg.OK, true
+		if msg.Gen == m.fontGen {
+			m.faces, m.facesErr, m.facesDone = msg.Lines, msg.Err, true
+		}
 		return m, nil
 	case FontImageMsg:
 		return m.fontImage(msg)
@@ -476,8 +479,9 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "x":
 		m.dlg, m.dlgOff = dlgExport, 0
 	case "f":
-		m.dlg, m.faces, m.facesDone = dlgFonts, nil, false
+		m.dlg, m.dlgOff, m.faces, m.facesDone = dlgFonts, 0, nil, false
 		m.fontFile, m.fontErr = "", ""
+		m.fontGen++
 		return m, tea.Batch(m.facesCmd(), m.renderFontCmd())
 	}
 	return m, nil
@@ -565,8 +569,17 @@ func (m Model) undo() (Model, tea.Cmd) {
 func (m Model) dialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
 	switch m.dlg {
-	case dlgHelp, dlgFonts:
+	case dlgHelp:
 		m.dlg = dlgNone
+	case dlgFonts:
+		switch k {
+		case "down", "j":
+			m.dlgOff++
+		case "up", "k":
+			m.dlgOff = max(0, m.dlgOff-1)
+		default:
+			m.dlg = dlgNone
+		}
 	case dlgExport:
 		switch k {
 		case "esc", "q", "x":
@@ -620,7 +633,7 @@ func (m Model) dialogKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // doImport merges a pasted config or a file path into the staged values.
 func (m Model) doImport() Model {
 	m.dlg = dlgNone
-	src := m.dlgBuf
+	src, cut := m.dlgBuf, false
 	if strings.Contains(src, "#share=") {
 		text, err := DecodeShare(src)
 		if err != nil {
@@ -628,6 +641,8 @@ func (m Model) doImport() Model {
 			return m
 		}
 		src = text
+		// shortcut: links carry no checksum; a missing final newline is the only cut-off hint.
+		cut = !strings.HasSuffix(text, "\n")
 	} else if t := strings.TrimSpace(src); t != "" && !strings.ContainsAny(t, "\n=") {
 		b, err := os.ReadFile(expandHome(t))
 		if err != nil {
@@ -668,6 +683,9 @@ func (m Model) doImport() Model {
 	}
 	if invalid > 0 {
 		msg += " (" + plural(invalid, "invalid value") + " skipped)"
+	}
+	if cut {
+		msg += " — the link's last line has no newline, so check it wasn't cut off"
 	}
 	m.note(msg)
 	return m

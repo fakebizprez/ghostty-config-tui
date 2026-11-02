@@ -8,12 +8,12 @@ import (
 )
 
 // glyphIDs returns shaped glyph ids next to plain cmap ids.
-func glyphIDs(path, text string) (shaped, plain []gofont.GID, err error) {
-	face, err := loadFace(path)
+func glyphIDs(f Font, text string) (shaped, plain []gofont.GID, err error) {
+	face, err := loadFace(f)
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, g := range glyphRun(face, path, text, 30) {
+	for _, g := range glyphRun(face, f, text, 30) {
 		shaped = append(shaped, g.gid)
 	}
 	for _, r := range text {
@@ -26,14 +26,14 @@ func glyphIDs(path, text string) (shaped, plain []gofont.GID, err error) {
 // Fira Code's ligatures must come out of shaping the way HarfBuzz
 // (hb-shape) produces them: substituted glyphs, not the plain cmap ones.
 func TestShapingAppliesLigatures(t *testing.T) {
-	var path string
+	var path Font
 	for _, fam := range []string{"FiraCode Nerd Font", "Fira Code", "FiraCode Nerd Font Mono"} {
 		if p, ok := Find(fam); ok {
 			path = p
 			break
 		}
 	}
-	if path == "" {
+	if path.Path == "" {
 		t.Skip("Fira Code not installed")
 	}
 	for _, txt := range []string{"->", "!=", "www"} {
@@ -56,8 +56,8 @@ func TestFindPrefersRegularFace(t *testing.T) {
 	if !ok {
 		t.Skip("FiraCode Nerd Font not installed")
 	}
-	if !strings.Contains(p, "Regular") {
-		t.Fatalf("Find picked %s, want the Regular face", p)
+	if !strings.Contains(p.Path, "Regular") {
+		t.Fatalf("Find picked %s, want the Regular face", p.Path)
 	}
 }
 

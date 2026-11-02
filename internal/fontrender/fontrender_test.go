@@ -38,3 +38,21 @@ func TestFindUnknownFamily(t *testing.T) {
 		t.Fatal("unknown family should not be found")
 	}
 }
+
+// Avenir Next.ttc stores Bold first; its plain Regular face is index 7.
+func TestFindPicksRegularFaceInCollection(t *testing.T) {
+	f, ok := Find("Avenir Next")
+	if !ok {
+		t.Skip("Avenir Next not installed")
+	}
+	if f.Index != 7 {
+		t.Fatalf("Find picked face %d of %s, want 7 (Regular)", f.Index, f.Path)
+	}
+	face, err := loadFace(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := face.Describe(); d.Aspect.Weight != 400 {
+		t.Fatalf("loaded face weight %v, want 400 (Regular)", d.Aspect.Weight)
+	}
+}

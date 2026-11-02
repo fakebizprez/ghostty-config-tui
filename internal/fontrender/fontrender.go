@@ -36,17 +36,23 @@ func fontDirs() []string {
 	return []string{"/usr/share/fonts", "/usr/local/share/fonts", filepath.Join(home, ".local/share/fonts"), filepath.Join(home, ".fonts")}
 }
 
+// Font is one face: a font file and, for a .ttc/.otc collection, which face in it.
+type Font struct {
+	Path  string
+	Index int
+}
+
 var (
 	indexOnce sync.Once
-	index     map[string]string // lowercase family -> file
+	index     map[string]Font // lowercase family -> face
 
 	foundMu sync.Mutex
-	found   = map[string]string{} // family -> file, from earlier Find calls
+	found   = map[string]Font{} // family -> face, from earlier Find calls
 )
 
-// Find returns a font file whose family (or typographic family) matches.
-// The first miss indexes the font directories.
-func Find(family string) (string, bool) {
+// Find returns a face whose family (or typographic family) matches,
+// preferring the upright regular one. The first miss indexes the font directories.
+func Find(family string) (Font, bool) {
 	foundMu.Lock()
 	defer foundMu.Unlock()
 	if p, ok := found[family]; ok {
@@ -68,39 +74,43 @@ func squash(s string) string {
 	return strings.ToLower(strings.NewReplacer(" ", "", "-", "", "_", "").Replace(s))
 }
 
-func byFileName(family string) (string, bool) {
+func byFileName(family string) (Font, bool) {
 	want := squash(family)
 	var buf sfnt.Buffer
-	found := ""
+	var found *Font
 	for _, dir := range fontDirs() {
 		matches, _ := filepath.Glob(filepath.Join(dir, "*"))
 		for _, p := range matches {
 			if !strings.HasPrefix(squash(filepath.Base(p)), want) {
 				continue
 			}
-			regular := false
-			eachFont(p, func(f *sfnt.Font) {
+			regular := -1
+			eachFont(p, func(i int, f *sfnt.Font) {
 				name, err := f.Name(&buf, sfnt.NameIDFamily)
 				if err != nil || !strings.EqualFold(name, family) {
 					return
 				}
-				if sub, _ := f.Name(&buf, sfnt.NameIDSubfamily); strings.EqualFold(sub, "Regular") {
-					regular = true
+				if sub, _ := f.Name(&buf, sfnt.NameIDSubfamily); strings.EqualFold(sub, "Regular") && regular < 0 {
+					regular = i
 				}
-				if found == "" {
-					found = p
+				if found == nil {
+					found = &Font{p, i}
 				}
 			})
-			if regular {
-				return p, true // the upright regular face wins
+			if regular >= 0 {
+				return Font{p, regular}, true // the upright regular face wins
 			}
 		}
 	}
-	return found, found != ""
+	if found == nil {
+		return Font{}, false
+	}
+	return *found, true
 }
 
 func buildIndex() {
-	index = map[string]string{}
+	index = map[string]Font{}
+	regular := map[string]bool{}
 	var buf sfnt.Buffer
 	for _, dir := range fontDirs() {
 		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
@@ -111,14 +121,15 @@ func buildIndex() {
 			if ext != ".ttf" && ext != ".otf" && ext != ".ttc" && ext != ".otc" {
 				return nil
 			}
-			eachFont(p, func(f *sfnt.Font) {
+			eachFont(p, func(i int, f *sfnt.Font) {
+				sub, _ := f.Name(&buf, sfnt.NameIDSubfamily)
+				isRegular := strings.EqualFold(sub, "Regular") || strings.Contains(p, "Regular")
 				for _, id := range []sfnt.NameID{sfnt.NameIDFamily, sfnt.NameIDTypographicFamily} {
 					if name, err := f.Name(&buf, id); err == nil && name != "" {
 						key := strings.ToLower(name)
-						// Prefer a regular face: keep the first file, but let a
-						// file named *Regular* win.
-						if _, seen := index[key]; !seen || strings.Contains(p, "Regular") {
-							index[key] = p
+						// Keep the first face, but let the first regular one win.
+						if _, seen := index[key]; !seen || (isRegular && !regular[key]) {
+							index[key], regular[key] = Font{p, i}, isRegular
 						}
 					}
 				}
@@ -130,7 +141,7 @@ func buildIndex() {
 
 // eachFont calls fn for every face in the font file at p. It reads through
 // the open file, so only the tables fn asks for are loaded, not the whole file.
-func eachFont(p string, fn func(*sfnt.Font)) {
+func eachFont(p string, fn func(int, *sfnt.Font)) {
 	file, err := os.Open(p)
 	if err != nil {
 		return
@@ -139,24 +150,27 @@ func eachFont(p string, fn func(*sfnt.Font)) {
 	if c, err := sfnt.ParseCollectionReaderAt(file); err == nil {
 		for i := 0; i < c.NumFonts(); i++ {
 			if f, err := c.Font(i); err == nil {
-				fn(f)
+				fn(i, f)
 			}
 		}
 		return
 	}
 	if f, err := sfnt.ParseReaderAt(file); err == nil {
-		fn(f)
+		fn(0, f)
 	}
 }
 
-// loadFace parses the first face of a font file or collection.
-func loadFace(path string) (*gofont.Face, error) {
-	b, err := os.ReadFile(path)
+// loadFace parses f's face from its font file or collection.
+func loadFace(f Font) (*gofont.Face, error) {
+	b, err := os.ReadFile(f.Path)
 	if err != nil {
 		return nil, err
 	}
 	if faces, err := gofont.ParseTTC(bytes.NewReader(b)); err == nil && len(faces) > 0 {
-		return faces[0], nil
+		if f.Index < 0 || f.Index >= len(faces) {
+			return nil, fmt.Errorf("%s has no face %d", f.Path, f.Index)
+		}
+		return faces[f.Index], nil
 	}
 	return gofont.ParseTTF(bytes.NewReader(b))
 }
@@ -183,10 +197,10 @@ func hasHBShape() bool { return hbPath != "" }
 
 // hbShape shapes with the real HarfBuzz CLI when installed; go-text's
 // shaper misses some variable-font substitutions (e.g. Cascadia Code).
-func hbShape(path, text string) ([]glyph, error) {
+func hbShape(f Font, text string) ([]glyph, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, hbPath, "--no-glyph-names", path, "--", text).Output()
+	out, err := exec.CommandContext(ctx, hbPath, "--no-glyph-names", "--face-index="+strconv.Itoa(f.Index), f.Path, "--", text).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -222,9 +236,9 @@ func parseHB(out string) ([]glyph, error) {
 func atof(s string) float32 { n, _ := strconv.Atoi(s); return float32(n) }
 
 // glyphRun shapes a line into glyphs positioned in pixels.
-func glyphRun(face *gofont.Face, path, text string, px float64) []glyph {
+func glyphRun(face *gofont.Face, f Font, text string, px float64) []glyph {
 	if hasHBShape() {
-		if gs, err := hbShape(path, text); err == nil {
+		if gs, err := hbShape(f, text); err == nil {
 			unit := float32(px) / float32(face.Upem())
 			for i := range gs {
 				gs[i].xoff, gs[i].yoff, gs[i].adv = gs[i].xoff*unit, gs[i].yoff*unit, gs[i].adv*unit
@@ -243,8 +257,8 @@ func glyphRun(face *gofont.Face, path, text string, px float64) []glyph {
 // and contextual alternates apply) and rasterizes the glyph outlines.
 // Glyphs the font lacks render as its .notdef box, which shows what this
 // font covers on its own.
-func Render(path string, lines []string, px float64, bg, fg color.Color) (image.Image, error) {
-	face, err := loadFace(path)
+func Render(f Font, lines []string, px float64, bg, fg color.Color) (image.Image, error) {
+	face, err := loadFace(f)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +267,7 @@ func Render(path string, lines []string, px float64, bg, fg color.Color) (image.
 	runs := make([][]glyph, len(lines))
 	w := 0
 	for i, l := range lines {
-		runs[i] = glyphRun(face, path, l, px)
+		runs[i] = glyphRun(face, f, l, px)
 		adv := float32(0)
 		for _, g := range runs[i] {
 			adv += g.adv

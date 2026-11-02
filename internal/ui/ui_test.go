@@ -525,9 +525,9 @@ func TestFontPlaygroundUsesStagedFonts(t *testing.T) {
 	old := showFace
 	defer func() { showFace = old }()
 	var gotFamilies []string
-	showFace = func(sample string, families []string) ([]string, bool) {
+	showFace = func(sample string, families []string) ([]string, error) {
 		gotFamilies = families
-		return []string{"U+2192 « → » found in face “Iosevka”."}, true
+		return []string{"U+2192 « → » found in face “Iosevka”."}, nil
 	}
 	m, _ := newModel(map[string][]string{"font-family": {"Iosevka", "Symbols Nerd Font"}})
 	mm, cmd := m.Update(key("f"))
@@ -540,7 +540,7 @@ func TestFontPlaygroundUsesStagedFonts(t *testing.T) {
 	if !strings.Contains(out, "Font playground") || !strings.Contains(out, "-> => != <=") || !strings.Contains(out, "found in face “Iosevka”") {
 		t.Fatalf("playground render:\n%s", out)
 	}
-	if strings.Join(gotFamilies, ",") != "Iosevka,Symbols Nerd Font" {
+	if strings.Join(gotFamilies, ",") != "font-family=Iosevka,font-family=Symbols Nerd Font" {
 		t.Fatalf("show-face families = %v", gotFamilies)
 	}
 }
@@ -630,7 +630,7 @@ func TestIconRealImageWhenGraphicsSupported(t *testing.T) {
 func TestFontPlaygroundRealRendering(t *testing.T) {
 	oldFace, oldRender := showFace, renderFont
 	defer func() { showFace, renderFont = oldFace, oldRender }()
-	showFace = func(string, []string) ([]string, bool) { return nil, true }
+	showFace = func(string, []string) ([]string, error) { return nil, nil }
 	var gotFamily string
 	renderFont = func(family string, lines []string, bg, fg string) (image.Image, string, error) {
 		gotFamily = family
