@@ -1,2 +1,25 @@
+# Build output
 /ghostty-config-tui
+/dist/
+
+# Go test and coverage output
+*.test
+*.out
+coverage.*
+
+# macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local agent leftovers
 .muse/
