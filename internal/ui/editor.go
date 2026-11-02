@@ -458,15 +458,8 @@ func (e *editor) RGB() [3]int {
 	if !schema.IsHex(c) {
 		c = schema.NormalizeColor(e.st.Default)
 	}
-	var out [3]int
-	if !schema.IsHex(c) {
-		return out
-	}
-	for i := 0; i < 3; i++ {
-		n, _ := strconv.ParseUint(c[1+2*i:3+2*i], 16, 8)
-		out[i] = int(n)
-	}
-	return out
+	rgb, _ := schema.ParseHex(c)
+	return [3]int{int(rgb.R), int(rgb.G), int(rgb.B)}
 }
 
 func (e *editor) channel(d int) string {

@@ -3,7 +3,25 @@ package fontrender
 import (
 	"strings"
 	"testing"
+
+	gofont "github.com/go-text/typesetting/font"
 )
+
+// glyphIDs returns shaped glyph ids next to plain cmap ids.
+func glyphIDs(path, text string) (shaped, plain []gofont.GID, err error) {
+	face, err := loadFace(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, g := range glyphRun(face, path, text, 30) {
+		shaped = append(shaped, g.gid)
+	}
+	for _, r := range text {
+		gid, _ := face.NominalGlyph(r)
+		plain = append(plain, gid)
+	}
+	return shaped, plain, nil
+}
 
 // Fira Code's ligatures must come out of shaping the way HarfBuzz
 // (hb-shape) produces them: substituted glyphs, not the plain cmap ones.

@@ -1,7 +1,7 @@
 package icons
 
 import (
-	"image/color"
+	"image"
 	"testing"
 )
 
@@ -34,14 +34,34 @@ func TestCustomStyleTintsGhostAndScreen(t *testing.T) {
 	if !(b > r && b > g) {
 		t.Fatalf("screen pixel (%d,%d) = %v,%v,%v, want blue", sx, sy, r>>8, g>>8, b>>8)
 	}
-	_ = color.RGBA{}
 }
 
-func TestParseHex(t *testing.T) {
-	if c, ok := parseHex("#10ff20"); !ok || c != (color.RGBA{0x10, 0xff, 0x20, 0xff}) {
-		t.Fatalf("parseHex = %v %v", c, ok)
+// maxAlpha finds the most opaque pixel of a mask.
+func maxAlpha(m image.Image) (int, int) {
+	bx, by, best := 0, 0, uint32(0)
+	b := m.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if _, _, _, a := m.At(x, y).RGBA(); a > best {
+				bx, by, best = x, y, a
+			}
+		}
 	}
-	if _, ok := parseHex("teal"); ok {
-		t.Fatal("names are not hex")
+	return bx, by
+}
+
+// screenOnlyPixel finds an opaque screen-mask pixel outside the ghost.
+func screenOnlyPixel() (int, int) {
+	s, g := screenMask(), ghostMask()
+	b := s.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			_, _, _, sa := s.At(x, y).RGBA()
+			_, _, _, ga := g.At(x, y).RGBA()
+			if sa > 0xf000 && ga == 0 {
+				return x, y
+			}
+		}
 	}
+	return 0, 0
 }

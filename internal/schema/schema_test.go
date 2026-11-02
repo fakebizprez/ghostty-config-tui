@@ -2,6 +2,7 @@ package schema
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"strings"
 	"testing"
@@ -207,5 +208,16 @@ func TestColorNamesAndCellValues(t *testing.T) {
 		if _, _, err := Validate(c.s, c.in); err != nil {
 			t.Errorf("Validate(%s, %q) = %v", c.s.Key, c.in, err)
 		}
+	}
+}
+
+func TestParseHex(t *testing.T) {
+	for in, want := range map[string]color.RGBA{"#10ff20": {0x10, 0xff, 0x20, 0xff}, "#10FF2080": {0x10, 0xff, 0x20, 0xff}} {
+		if c, ok := ParseHex(in); !ok || c != want {
+			t.Fatalf("ParseHex(%q) = %v %v", in, c, ok)
+		}
+	}
+	if _, ok := ParseHex("teal"); ok {
+		t.Fatal("names are not hex")
 	}
 }

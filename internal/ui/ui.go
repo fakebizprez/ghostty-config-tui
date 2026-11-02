@@ -99,10 +99,9 @@ type Model struct {
 	dlgOff int
 
 	iconSent  string // signature of the icon last uploaded
-	fontImg   bool   // playground font image uploaded
 	fontCols  int
 	fontRows  int
-	fontFile  string
+	fontFile  string // set once the playground font image is uploaded
 	fontErr   string
 	faces     []string // font playground results
 	facesOK   bool
@@ -288,8 +287,16 @@ func (m *Model) clampRow() {
 	m.docOff = 0
 }
 
-// Update implements tea.Model.
+// Update implements tea.Model. After every message it uploads the app icon
+// if the shown icon setting changed, whatever changed it (keys, paste, undo).
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	res, cmd := m.update(msg)
+	next := res.(Model)
+	icon := next.syncIcon() // before returning next: syncIcon updates it
+	return next, tea.Batch(cmd, icon)
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case BlinkMsg:
 		m.blinkOn = !m.blinkOn
@@ -314,12 +321,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s := msg.String(); (s == "ctrl+j" || s == "ctrl+m") && !m.recording() {
 			msg = tea.KeyPressMsg{Code: tea.KeyEnter}
 		}
-		res, cmd := m.key(msg)
-		next := res.(Model)
-		if c := next.syncIcon(); c != nil {
-			return next, tea.Batch(cmd, c)
-		}
-		return next, cmd
+		return m.key(msg)
 	}
 	return m, nil
 }
@@ -475,11 +477,8 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dlg, m.dlgOff = dlgExport, 0
 	case "f":
 		m.dlg, m.faces, m.facesDone = dlgFonts, nil, false
-		m.fontImg, m.fontErr = false, ""
-		if m.opts.Graphics {
-			return m, tea.Batch(m.facesCmd(), m.renderFontCmd())
-		}
-		return m, m.facesCmd()
+		m.fontFile, m.fontErr = "", ""
+		return m, tea.Batch(m.facesCmd(), m.renderFontCmd())
 	}
 	return m, nil
 }

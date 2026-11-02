@@ -8,11 +8,10 @@ import (
 	"bytes"
 	"embed"
 	"image"
-	"image/color"
 	"image/draw"
 	"image/png"
-	"strconv"
-	"strings"
+
+	"ghostty-config-tui/internal/schema"
 )
 
 //go:embed assets/*.png
@@ -50,9 +49,9 @@ func Icon(style, frame, ghost, screen string) (image.Image, bool) {
 	dst := image.NewRGBA(base.Bounds())
 	draw.Draw(dst, dst.Bounds(), base, image.Point{}, draw.Src)
 	tint := func(hex, def string, mask image.Image) {
-		c, ok := parseHex(hex)
+		c, ok := schema.ParseHex(hex)
 		if !ok {
-			c, _ = parseHex(def)
+			c, _ = schema.ParseHex(def)
 		}
 		draw.DrawMask(dst, dst.Bounds(), image.NewUniform(c), image.Point{}, mask, image.Point{}, draw.Over)
 	}
@@ -68,45 +67,3 @@ func Icon(style, frame, ghost, screen string) (image.Image, bool) {
 
 func screenMask() image.Image { m, _ := load("mask"); return m }
 func ghostMask() image.Image  { m, _ := load("ghost"); return m }
-
-// maxAlpha finds the most opaque pixel of a mask (for tests).
-func maxAlpha(m image.Image) (int, int) {
-	bx, by, best := 0, 0, uint32(0)
-	b := m.Bounds()
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			if _, _, _, a := m.At(x, y).RGBA(); a > best {
-				bx, by, best = x, y, a
-			}
-		}
-	}
-	return bx, by
-}
-
-// screenOnlyPixel finds an opaque screen-mask pixel outside the ghost.
-func screenOnlyPixel() (int, int) {
-	s, g := screenMask(), ghostMask()
-	b := s.Bounds()
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			_, _, _, sa := s.At(x, y).RGBA()
-			_, _, _, ga := g.At(x, y).RGBA()
-			if sa > 0xf000 && ga == 0 {
-				return x, y
-			}
-		}
-	}
-	return 0, 0
-}
-
-func parseHex(s string) (color.RGBA, bool) {
-	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
-	if len(s) != 6 {
-		return color.RGBA{}, false
-	}
-	n, err := strconv.ParseUint(s, 16, 32)
-	if err != nil {
-		return color.RGBA{}, false
-	}
-	return color.RGBA{uint8(n >> 16), uint8(n >> 8), uint8(n), 0xff}, true
-}

@@ -39,17 +39,28 @@ func fontDirs() []string {
 var (
 	indexOnce sync.Once
 	index     map[string]string // lowercase family -> file
+
+	foundMu sync.Mutex
+	found   = map[string]string{} // family -> file, from earlier Find calls
 )
 
 // Find returns a font file whose family (or typographic family) matches.
-// The first call indexes the font directories.
+// The first miss indexes the font directories.
 func Find(family string) (string, bool) {
-	// Fast path: most font files are named after their family.
-	if p, ok := byFileName(family); ok {
+	foundMu.Lock()
+	defer foundMu.Unlock()
+	if p, ok := found[family]; ok {
 		return p, true
 	}
-	indexOnce.Do(buildIndex)
-	p, ok := index[strings.ToLower(strings.TrimSpace(family))]
+	// Fast path: most font files are named after their family.
+	p, ok := byFileName(family)
+	if !ok {
+		indexOnce.Do(buildIndex)
+		p, ok = index[strings.ToLower(strings.TrimSpace(family))]
+	}
+	if ok {
+		found[family] = p
+	}
 	return p, ok
 }
 
@@ -67,21 +78,21 @@ func byFileName(family string) (string, bool) {
 			if !strings.HasPrefix(squash(filepath.Base(p)), want) {
 				continue
 			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				continue
-			}
-			for _, f := range parseAll(b) {
+			regular := false
+			eachFont(p, func(f *sfnt.Font) {
 				name, err := f.Name(&buf, sfnt.NameIDFamily)
 				if err != nil || !strings.EqualFold(name, family) {
-					continue
+					return
 				}
 				if sub, _ := f.Name(&buf, sfnt.NameIDSubfamily); strings.EqualFold(sub, "Regular") {
-					return p, true // the upright regular face wins
+					regular = true
 				}
 				if found == "" {
 					found = p
 				}
+			})
+			if regular {
+				return p, true // the upright regular face wins
 			}
 		}
 	}
@@ -100,11 +111,7 @@ func buildIndex() {
 			if ext != ".ttf" && ext != ".otf" && ext != ".ttc" && ext != ".otc" {
 				return nil
 			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				return nil
-			}
-			for _, f := range parseAll(b) {
+			eachFont(p, func(f *sfnt.Font) {
 				for _, id := range []sfnt.NameID{sfnt.NameIDFamily, sfnt.NameIDTypographicFamily} {
 					if name, err := f.Name(&buf, id); err == nil && name != "" {
 						key := strings.ToLower(name)
@@ -115,26 +122,31 @@ func buildIndex() {
 						}
 					}
 				}
-			}
+			})
 			return nil
 		})
 	}
 }
 
-func parseAll(b []byte) []*sfnt.Font {
-	if c, err := sfnt.ParseCollection(b); err == nil {
-		var out []*sfnt.Font
+// eachFont calls fn for every face in the font file at p. It reads through
+// the open file, so only the tables fn asks for are loaded, not the whole file.
+func eachFont(p string, fn func(*sfnt.Font)) {
+	file, err := os.Open(p)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	if c, err := sfnt.ParseCollectionReaderAt(file); err == nil {
 		for i := 0; i < c.NumFonts(); i++ {
 			if f, err := c.Font(i); err == nil {
-				out = append(out, f)
+				fn(f)
 			}
 		}
-		return out
+		return
 	}
-	if f, err := sfnt.Parse(b); err == nil {
-		return []*sfnt.Font{f}
+	if f, err := sfnt.ParseReaderAt(file); err == nil {
+		fn(f)
 	}
-	return nil
 }
 
 // loadFace parses the first face of a font file or collection.
@@ -159,10 +171,10 @@ func shape(face *gofont.Face, text string, px float64) shaping.Output {
 	})
 }
 
-// hbGlyph is one glyph from HarfBuzz's hb-shape, in font units.
-type hbGlyph struct {
+// glyph is one shaped glyph: font units from parseHB, pixels from glyphRun.
+type glyph struct {
 	gid             gofont.GID
-	xoff, yoff, adv int
+	xoff, yoff, adv float32
 }
 
 var hbPath, _ = exec.LookPath("hb-shape")
@@ -171,7 +183,7 @@ func hasHBShape() bool { return hbPath != "" }
 
 // hbShape shapes with the real HarfBuzz CLI when installed; go-text's
 // shaper misses some variable-font substitutions (e.g. Cascadia Code).
-func hbShape(path, text string) ([]hbGlyph, error) {
+func hbShape(path, text string) ([]glyph, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, hbPath, "--no-glyph-names", path, "--", text).Output()
@@ -182,14 +194,14 @@ func hbShape(path, text string) ([]hbGlyph, error) {
 }
 
 // parseHB reads `[gid=cluster@x,y+adv|...]`.
-func parseHB(out string) ([]hbGlyph, error) {
+func parseHB(out string) ([]glyph, error) {
 	out = strings.Trim(strings.TrimSpace(out), "[]")
 	if out == "" {
 		return nil, nil
 	}
-	var gs []hbGlyph
+	var gs []glyph
 	for _, item := range strings.Split(out, "|") {
-		var g hbGlyph
+		var g glyph
 		gid, rest, ok := strings.Cut(item, "=")
 		n, err := strconv.Atoi(gid)
 		if !ok || err != nil {
@@ -197,47 +209,34 @@ func parseHB(out string) ([]hbGlyph, error) {
 		}
 		g.gid = gofont.GID(n)
 		pos, adv, _ := strings.Cut(rest, "+")
-		g.adv, _ = strconv.Atoi(adv)
+		g.adv = atof(adv)
 		if _, off, ok := strings.Cut(pos, "@"); ok {
 			x, y, _ := strings.Cut(off, ",")
-			g.xoff, _ = strconv.Atoi(x)
-			g.yoff, _ = strconv.Atoi(y)
+			g.xoff, g.yoff = atof(x), atof(y)
 		}
 		gs = append(gs, g)
 	}
 	return gs, nil
 }
 
+func atof(s string) float32 { n, _ := strconv.Atoi(s); return float32(n) }
+
 // glyphRun shapes a line into glyphs positioned in pixels.
-func glyphRun(face *gofont.Face, path, text string, px float64) (glyphs []hbGlyph, scale float32) {
-	unit := float32(px) / float32(face.Upem())
+func glyphRun(face *gofont.Face, path, text string, px float64) []glyph {
 	if hasHBShape() {
 		if gs, err := hbShape(path, text); err == nil {
-			return gs, unit
+			unit := float32(px) / float32(face.Upem())
+			for i := range gs {
+				gs[i].xoff, gs[i].yoff, gs[i].adv = gs[i].xoff*unit, gs[i].yoff*unit, gs[i].adv*unit
+			}
+			return gs
 		}
 	}
-	// go-text positions are 26.6 fixed pixels; express them as 1/64 px units.
+	var gs []glyph // go-text positions are 26.6 fixed-point pixels
 	for _, g := range shape(face, text, px).Glyphs {
-		glyphs = append(glyphs, hbGlyph{gid: g.GlyphID, xoff: int(g.XOffset), yoff: int(g.YOffset), adv: int(g.XAdvance)})
+		gs = append(gs, glyph{gid: g.GlyphID, xoff: float32(g.XOffset) / 64, yoff: float32(g.YOffset) / 64, adv: float32(g.XAdvance) / 64})
 	}
-	return glyphs, 1.0 / 64
-}
-
-// glyphIDs returns shaped glyph ids next to plain cmap ids (for tests).
-func glyphIDs(path, text string) (shaped, plain []gofont.GID, err error) {
-	face, err := loadFace(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	gs, _ := glyphRun(face, path, text, 30)
-	for _, g := range gs {
-		shaped = append(shaped, g.gid)
-	}
-	for _, r := range text {
-		gid, _ := face.NominalGlyph(r)
-		plain = append(plain, gid)
-	}
-	return shaped, plain, nil
+	return gs
 }
 
 // Render shapes each line with HarfBuzz-compatible shaping (so ligatures
@@ -251,30 +250,25 @@ func Render(path string, lines []string, px float64, bg, fg color.Color) (image.
 	}
 	scale := float32(px) / float32(face.Upem())
 	lineH := int(px*1.35) + 4
-	type run struct {
-		gs   []hbGlyph
-		unit float32
-	}
-	runs := make([]run, len(lines))
+	runs := make([][]glyph, len(lines))
 	w := 0
 	for i, l := range lines {
-		gs, unit := glyphRun(face, path, l, px)
-		runs[i] = run{gs, unit}
-		adv := 0
-		for _, g := range gs {
+		runs[i] = glyphRun(face, path, l, px)
+		adv := float32(0)
+		for _, g := range runs[i] {
 			adv += g.adv
 		}
-		w = max(w, int(float32(adv)*unit)+1)
+		w = max(w, int(adv)+1)
 	}
 	img := image.NewRGBA(image.Rect(0, 0, w+24, lineH*len(lines)+16))
 	draw.Draw(img, img.Bounds(), image.NewUniform(bg), image.Point{}, draw.Src)
 	ras := vector.NewRasterizer(img.Bounds().Dx(), img.Bounds().Dy())
-	for i, r := range runs {
+	for i, gs := range runs {
 		x := float32(12)
 		base := float32(8 + i*lineH + int(px))
-		for _, g := range r.gs {
-			ox := x + float32(g.xoff)*r.unit
-			oy := base - float32(g.yoff)*r.unit
+		for _, g := range gs {
+			ox := x + g.xoff
+			oy := base - g.yoff
 			if out, ok := face.GlyphData(g.gid).(gofont.GlyphOutline); ok {
 				pt := func(p ot.SegmentPoint) (float32, float32) { return ox + p.X*scale, oy - p.Y*scale }
 				for _, seg := range out.Segments {
@@ -297,7 +291,7 @@ func Render(path string, lines []string, px float64, bg, fg color.Color) (image.
 				}
 				ras.ClosePath()
 			}
-			x += float32(g.adv) * r.unit
+			x += g.adv
 		}
 	}
 	ras.Draw(img, img.Bounds(), image.NewUniform(fg), image.Point{})

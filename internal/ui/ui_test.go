@@ -656,3 +656,22 @@ func TestFontPlaygroundRealRendering(t *testing.T) {
 		t.Fatalf("playground should show the rendered font image:\n%s", ansi.Strip(out))
 	}
 }
+
+func TestIconFallsBackToBlockArtForCustomFile(t *testing.T) {
+	m, _ := newModel(map[string][]string{"macos-icon": {"blueprint"}})
+	m.opts.Graphics = true
+	m = goTo(t, m, "macos-icon")
+	m.iconSent = ""
+	mm, _ := m.Update(key("p"))
+	m = mm.(Model)
+	if m.iconSent == "" {
+		t.Fatal("blueprint should upload an image")
+	}
+	// Switch to a user icon file (no bundled image); any message, not only a key, re-syncs.
+	m.set("macos-icon", []string{"custom"})
+	mm, _ = m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m = mm.(Model)
+	if strings.ContainsRune(m.Render(), kitty.Placeholder) {
+		t.Fatal("custom must show block art, not the previously uploaded icon")
+	}
+}

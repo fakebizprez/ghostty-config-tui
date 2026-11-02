@@ -2,6 +2,7 @@ package schema
 
 import (
 	"fmt"
+	"image/color"
 	"strconv"
 	"strings"
 )
@@ -14,6 +15,16 @@ func IsHex(s string) bool {
 	}
 	_, err := strconv.ParseUint(s[1:], 16, 64)
 	return err == nil
+}
+
+// ParseHex decodes the RGB of a #RRGGBB or #RRGGBBAA color (alpha ignored).
+func ParseHex(s string) (color.RGBA, bool) {
+	s = strings.TrimSpace(s)
+	if !IsHex(s) {
+		return color.RGBA{}, false
+	}
+	n, _ := strconv.ParseUint(s[1:7], 16, 32)
+	return color.RGBA{uint8(n >> 16), uint8(n >> 8), uint8(n), 0xff}, true
 }
 
 // ValidateColor is kept for callers that need the strict hex form.

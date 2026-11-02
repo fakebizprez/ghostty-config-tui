@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"path/filepath"
@@ -35,43 +36,24 @@ type FontImageMsg struct {
 var renderFont = func(family string, lines []string, bg, fg string) (image.Image, string, error) {
 	path, ok := fontrender.Find(family)
 	if !ok {
-		return nil, "", errNotInstalled(family)
+		return nil, "", fmt.Errorf("no font file for %q in the system font folders (Ghostty's bundled default has no file)", family)
 	}
-	img, err := fontrender.Render(path, lines, 30, hexColor(bg), hexColor(fg))
+	img, err := fontrender.Render(path, lines, 30, opaque(bg), opaque(fg))
 	return img, path, err
 }
 
-type errNotInstalled string
-
-func (e errNotInstalled) Error() string {
-	return "no font file for \"" + string(e) + "\" in the system font folders (Ghostty's bundled default has no file)"
-}
-
-func hexColor(h string) color.RGBA {
-	c := color.RGBA{A: 255}
-	if schema.IsHex(h) {
-		var r, g, b uint8
-		for i, p := range []*uint8{&r, &g, &b} {
-			*p = uint8(hexVal(h[1+2*i])<<4 | hexVal(h[2+2*i]))
-		}
-		c.R, c.G, c.B = r, g, b
-	}
+// opaque decodes a hex color, black when it is not hex.
+func opaque(h string) color.RGBA {
+	c, _ := schema.ParseHex(h)
+	c.A = 0xff
 	return c
 }
 
-func hexVal(b byte) byte {
-	switch {
-	case b >= '0' && b <= '9':
-		return b - '0'
-	case b >= 'a' && b <= 'f':
-		return b - 'a' + 10
-	case b >= 'A' && b <= 'F':
-		return b - 'A' + 10
-	}
-	return 0
-}
-
+// renderFontCmd is nil when the terminal can't show the image.
 func (m Model) renderFontCmd() tea.Cmd {
+	if !m.opts.Graphics {
+		return nil
+	}
 	family := firstOf(m.vals["font-family"])
 	if family == "" {
 		family = "JetBrains Mono"
@@ -96,7 +78,7 @@ func (m Model) fontImage(msg FontImageMsg) (Model, tea.Cmd) {
 	cols := min(max(m.width-8, 20), 100)
 	// Terminal cells are about twice as tall as wide.
 	rows := max(1, (cols*b.Dy()+b.Dx())/(2*b.Dx()))
-	m.fontImg, m.fontCols, m.fontRows, m.fontFile = true, cols, rows, msg.File
+	m.fontCols, m.fontRows, m.fontFile = cols, rows, msg.File
 	return m, tea.Raw(graphics.Transmit(fontID, msg.Img, cols, rows))
 }
 
@@ -110,13 +92,15 @@ func (m *Model) syncIcon() tea.Cmd {
 	if !m.opts.Graphics || !ok || !strings.HasPrefix(st.Key, "macos-icon") {
 		return nil
 	}
-	style := m.effective("macos-icon")
-	sig := strings.Join([]string{style, m.effective("macos-icon-frame"), m.explicit("macos-icon-ghost-color"), m.explicit("macos-icon-screen-color")}, "|")
+	style, frame := m.effective("macos-icon"), m.effective("macos-icon-frame")
+	ghost, screen := m.explicit("macos-icon-ghost-color"), m.explicit("macos-icon-screen-color")
+	sig := strings.Join([]string{style, frame, ghost, screen}, "|")
 	if sig == m.iconSent {
 		return nil
 	}
-	img, ok := icons.Icon(style, m.effective("macos-icon-frame"), hexOr(m.explicit("macos-icon-ghost-color"), ""), hexOr(m.explicit("macos-icon-screen-color"), ""))
+	img, ok := icons.Icon(style, frame, hexOr(ghost, ""), hexOr(screen, ""))
 	if !ok {
+		m.iconSent = "" // no bundled image (custom): show block art, not the last upload
 		return nil
 	}
 	m.iconSent = sig
@@ -157,17 +141,17 @@ func (m Model) playgroundLines(w int) []string {
 	}
 	out := []string{"font-family: " + hi.Render(fam) + faint.Render("  (staged values, unsaved edits included)"), ""}
 	switch {
-	case m.fontImg:
+	case m.fontFile != "":
 		out = append(out, faint.Render("Rendered with "+filepath.Base(m.fontFile)+" (shaped, so ligatures apply; glyphs this font lacks show as boxes):"))
 		out = append(out, graphics.Placeholder(fontID, m.fontCols, m.fontRows)...)
+	case m.fontErr != "":
+		out = append(out, warnSty.Render(m.fontErr))
+	case m.opts.Graphics:
+		out = append(out, faint.Render("rendering samples in your font…"))
 	default:
-		if m.fontErr != "" {
-			out = append(out, warnSty.Render(m.fontErr))
-		} else if m.opts.Graphics {
-			out = append(out, faint.Render("rendering samples in your font…"))
-		} else {
-			out = append(out, faint.Render("This terminal can't show images, so samples use its own font (run inside Ghostty for real rendering):"))
-		}
+		out = append(out, faint.Render("This terminal can't show images, so samples use its own font (run inside Ghostty for real rendering):"))
+	}
+	if m.fontFile == "" {
 		for _, s := range playgroundSamples {
 			out = append(out, "  "+s)
 		}
@@ -218,7 +202,7 @@ func (m Model) IconColors() IconPalette {
 // iconLines shows the real icon image when the terminal supports graphics,
 // otherwise a block-art approximation.
 func (m Model) iconLines() []string {
-	if m.opts.Graphics && m.iconSent != "" {
+	if m.iconSent != "" { // only set when graphics are on
 		out := []string{bold.Render("App icon") + faint.Render("  "+m.effective("macos-icon")+" · "+m.effective("macos-icon-frame"))}
 		return append(out, graphics.Placeholder(iconID, iconCols, iconRows)...)
 	}

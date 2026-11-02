@@ -2,7 +2,6 @@ package graphics
 
 import (
 	"image"
-	"image/color"
 	"strings"
 	"testing"
 
@@ -55,5 +54,4 @@ func TestPlaceholderGrid(t *testing.T) {
 	if !strings.Contains(rows[0], "38;5;101") {
 		t.Fatalf("placeholder must carry the image id as 256-color fg: %q", rows[0])
 	}
-	_ = color.RGBA{}
 }
